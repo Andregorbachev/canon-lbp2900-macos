@@ -429,15 +429,20 @@ def main():
                 capt.xstatus('before')
             except Exception as e:
                 log(f'  status failed: {e}')
-            log('== class SOFT_RESET')
-            tr.soft_reset(); time.sleep(1)
+            log('== class SOFT_RESET (USB printer-class request)')
             try:
+                tr.soft_reset(); time.sleep(1)
                 capt.xstatus('after soft reset')
             except Exception as e:
-                log(f'  status failed: {e}')
-            log('== USB port reset')
-            tr.port_reset(); time.sleep(1)
-            capt.xstatus('after port reset')
+                log(f'  soft reset path failed: {e}')
+            log('== USB port reset (re-enumeration, like re-plugging the cable)')
+            try:
+                tr.port_reset(); time.sleep(1)
+                capt.xstatus('after port reset')
+            except Exception as e:
+                log(f'  port reset path failed: {e}')
+                log('END: the printer does not answer even after a USB reset; power-cycle it')
+                return
             log('== can we reserve the unit now?')
             capt.cmd(0xA1A1); capt.cmd(0xA3A2)
             rep = capt.job_begin()
