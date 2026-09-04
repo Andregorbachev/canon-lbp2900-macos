@@ -1,57 +1,58 @@
-# Canon LBP2900 на macOS: драйвер на базе captdriver
+# Canon LBP2900 on macOS: a captdriver-based driver
 
-Драйвер печати для Canon LBP2900 / LBP2900B под современный macOS (собран и проверен
-на macOS 14.6.1 Sonoma, Apple Silicon). Это CUPS-фильтр `rastertocapt` из открытого
-проекта [captdriver](https://github.com/mounaiban/captdriver) (GPL-3.0) плюс небольшой
-патч для macOS и PPD-файл. Никаких kext, отключения SIP и демонов не требуется:
-фильтр общается с принтером через штатный USB-бэкенд CUPS.
+A print driver for the Canon LBP2900 / LBP2900B on current macOS (built and verified on
+macOS 14.6.1 Sonoma, Apple Silicon). It is the `rastertocapt` CUPS filter from the
+open-source [captdriver](https://github.com/mounaiban/captdriver) project (GPL-3.0) plus
+a small macOS patch and a PPD file. No kext, no SIP changes, no daemons: the filter talks
+to the printer through the stock CUPS USB backend.
 
-**Статус: печатает.** 04.09.2026 установлен на macOS 14.6.1 (Apple Silicon) и печатает
-на живом LBP2900 (device-id `MFG:Canon;MDL:LBP2900;CMD:CAPT;VER:2.1`): одностраничные
-и многостраничные задания, поля совпадают с экраном. Сценарий «кончилась бумага»
-тоже работает на живом принтере (04.09.2026, через CUPS): одна автоматическая
-повторная попытка, затем горит кнопка-индикатор и печать продолжается по нажатию.
-До живых тестов фильтр был прогнан через эмулятор LBP2900 (`tools/capt-fake-printer.py`):
-поток Hi-SCoA декодирован обратно и побайтно совпал с исходной страницей.
+**Status: it prints.** Installed on 2026-09-04 on macOS 14.6.1 (Apple Silicon) and
+printing on a real LBP2900 (device id `MFG:Canon;MDL:LBP2900;CMD:CAPT;VER:2.1`):
+single- and multi-page jobs, margins match the screen. Out-of-paper handling works on
+the real printer too (2026-09-04, through CUPS): one automatic retry, then the button
+LED comes on and printing resumes when the button is pressed. Before any live test the
+filter was run against an LBP2900 emulator (`tools/capt-fake-printer.py`): the Hi-SCoA
+stream decoded back to the original page byte for byte.
 
-## Почему не «драйвер с нуля»
+## Why not a driver from scratch
 
-- Canon никогда не выпускал драйвер LBP2900 для macOS. Установленный на этом Маке
-  пакет Canon `CUPSCAPT` 10.0.8 (и свежий 10.0.9) поддерживает LBP3000 и новее.
-- Протокол CAPT закрытый. Он реверс-инжинирился с 2004 по 2013 год (Boichat,
-  Galakhov, Bolsee); результат и есть captdriver: ~2300 строк C, из них команды
-  и сжатие Hi-SCoA описаны в `vendor/captdriver/SPECS`. Писать это заново значит
-  повторить годы сниффинга USB, причём часть байтов протокола до сих пор «?».
-- Код captdriver компилируется на macOS одной командой `cc` (оригинальное дерево
-  agalakhov вообще без правок, форку mounaiban мешает одна строка в `std.h`):
-  заголовки CUPS есть в SDK Xcode, USB-бэкенд Apple поддерживает нужные
-  side-channel и back-channel вызовы.
+- Canon never shipped an LBP2900 driver for macOS. The Canon `CUPSCAPT` package
+  installed on this Mac (10.0.8, and the current 10.0.9) supports the LBP3000 and newer.
+- CAPT is a closed protocol. It was reverse-engineered between 2004 and 2013 (Boichat,
+  Galakhov, Bolsee); captdriver is the result: about 2300 lines of C, with the commands
+  and the Hi-SCoA compression described in `vendor/captdriver/SPECS`. Writing it again
+  would mean repeating years of USB sniffing, and some protocol bytes are still `?`.
+- captdriver compiles on macOS with a single `cc` command (the original agalakhov tree
+  without any change, the mounaiban fork after removing one line in `std.h`): the CUPS
+  headers ship with the Xcode SDK and Apple's USB backend supports the side-channel and
+  back-channel calls the filter needs.
 
-## Что в папке
+## What is in this folder
 
-| Путь | Что это |
+| Path | What it is |
 |---|---|
-| `vendor/captdriver/` | Исходники captdriver, копия коммита из `UPSTREAM.txt`. Не править. |
-| `patches/lbp2900-paper-out-recovery.patch` | Второй патч: распознать сброшенную страницу (флаги «нет бумаги» или принтер сам отпустил задание), освободить и заново занять принтер, сбросить его, при пустом лотке мигать и ждать кнопку, сбросить ещё раз и послать ту же страницу. Проверяет коды ответа принтера и никогда не шлёт данные в состоянии ошибки. Плюс предупреждение в лог о кодах отказа. См. «Известные ограничения». |
-| `patches/lbp2900-macos.patch` | Патч поверх vendor: статус-стратегия LBP2900, опрос 100 мс, ограниченные ожидания, строки `PAGE:`/`STATE:` для очереди macOS (из [duy12i1i7/canon-LBP2900-for-macOS](https://github.com/duy12i1i7/canon-LBP2900-for-macOS), GPL-3.0) плюс удаление `#define _POSIX_C_SOURCE` из `std.h`, без которого код форка не собирается на macOS. |
-| `package.sh` | Собирает архив `dist/canon-lbp2900-macos-<версия>-universal.tar.gz` для установки на другом Маке без Xcode. |
-| `build.sh` | Сборка: копирует vendor в `build/`, накладывает патчи из `patches/` по порядку имён, компилирует фильтр и тест-утилиты, компилирует PPD из `canon-lbp.drv` через `ppdc` и прописывает абсолютный путь к фильтру. |
-| `test.sh` | Проверка без принтера, см. ниже. Результаты в `build/test/`. |
-| `install.sh`, `uninstall.sh` | Установка и удаление (нужен `sudo`). |
-| `ppd/Canon-LBP2900-captdriver.ppd` | Сгенерированный PPD. Пересоздаётся `build.sh`. |
-| `tools/capt-fake-printer.py` | Эмулятор принтера: подменяет три канала бэкенда CUPS (stdout, fd 3, fd 4) и отвечает на команды CAPT по `SPECS` и `prn_lbp2900.c`. |
-| `tools/compare-raster.py`, `tools/pbm-to-png.py` | Сравнение декодированной страницы с исходным растром и рендер PNG. |
-| `tools/capt-probe.py` | Прямой USB-зонд через libusb/pyusb (`.venv`, `brew install libusb`, запуск под `sudo`): статус принтера, USB-сброс и пошаговый эксперимент «нет бумаги» с журналом всех ответов принтера. Нужен, потому что через CUPS каждая попытка стоит перезагрузки принтера. |
-| `build/` | Всё сгенерированное. Удаляется и пересоздаётся `build.sh`. |
+| `vendor/captdriver/` | captdriver sources, a copy of the commit named in `UPSTREAM.txt`. Do not edit. |
+| `patches/lbp2900-macos.patch` | First patch on top of vendor: the LBP2900 status strategy, 100 ms polling, bounded waits, `PAGE:`/`STATE:` lines for the macOS queue (from [duy12i1i7/canon-LBP2900-for-macOS](https://github.com/duy12i1i7/canon-LBP2900-for-macOS), GPL-3.0), plus removal of `#define _POSIX_C_SOURCE` from `std.h`, without which the fork does not build on macOS. |
+| `patches/lbp2900-paper-out-recovery.patch` | Second patch: detect a dropped page (no-paper flags, or the printer releasing the job by itself), release and re-acquire the printer, re-initialise it, re-send the page once, then blink the LED and wait for the button before every further attempt. Checks the printer's result codes and never sends page data while the printer is in an error state. Also logs a warning whenever the printer rejects a command. See "Known limitations". |
+| `build.sh` | Build: copies vendor into `build/`, applies the patches from `patches/` in name order, compiles the filter and the test tools, compiles the PPD from `canon-lbp.drv` with `ppdc` and writes the absolute filter path into it. |
+| `test.sh` | Verification without a printer, see below. Results in `build/test/`. |
+| `install.sh`, `uninstall.sh` | Install and remove (need `sudo`). |
+| `package.sh` | Builds `dist/canon-lbp2900-macos-<version>-universal.tar.gz` for installing on another Mac without Xcode. |
+| `ppd/Canon-LBP2900-captdriver.ppd` | Generated PPD. Recreated by `build.sh`. |
+| `tools/capt-fake-printer.py` | Printer emulator: stands in for the three CUPS backend channels (stdout, fd 3, fd 4) and answers CAPT commands per `SPECS` and `prn_lbp2900.c`, including the out-of-paper behaviour observed on the real unit. |
+| `tools/compare-raster.py`, `tools/pbm-to-png.py` | Compare the decoded page with the source raster; render a PNG. |
+| `tools/capt-probe.py` | Direct USB probe over libusb/pyusb (`.venv`, `brew install libusb`, run with `sudo`): printer status, USB resets, and a step-by-step out-of-paper experiment that logs every printer reply. Needed because through CUPS each attempt costs a printer power cycle. |
+| `docs/research-notes.md` | What was checked and found: Canon's driver line-up, captdriver ports, the CAPT status record, the out-of-paper state machine. |
+| `build/` | Everything generated. Deleted and recreated by `build.sh`. |
 
-## Установка из готового архива (без Xcode)
+## Install from the release archive (no Xcode needed)
 
-Подходит для любого Мака с macOS 10.13 и новее, Intel или Apple Silicon.
+Works on any Mac with macOS 10.13 or newer, Intel or Apple Silicon.
 
-1. Скачайте `canon-lbp2900-macos-<версия>-universal.tar.gz` со страницы
+1. Download `canon-lbp2900-macos-<version>-universal.tar.gz` from
    https://github.com/Andregorbachev/canon-lbp2900-macos/releases
-2. Подключите LBP2900 по USB и включите его.
-3. В Терминале:
+2. Connect the LBP2900 over USB and switch it on.
+3. In Terminal:
 
    ```bash
    cd ~/Downloads
@@ -60,21 +61,20 @@
    sudo ./install.sh
    ```
 
-   Скрипт положит фильтр в `/Library/Printers/captdriver/`, PPD в системную папку и
-   создаст очередь `Canon_LBP2900`. Предупреждение `lpadmin: драйверы принтера не
-   рекомендуются…` нормально, это общий текст macOS про PPD.
-4. Пробная печать: `lpr -P Canon_LBP2900 build/test/test-page.txt` или любой документ
-   из программы, принтер «Canon LBP2900».
+   The script puts the filter into `/Library/Printers/captdriver/`, the PPD into the
+   system PPD folder, and creates the `Canon_LBP2900` queue. The `lpadmin: Printer
+   drivers are deprecated…` warning is normal; macOS prints it for every PPD.
+4. Test print: `lpr -P Canon_LBP2900 build/test/test-page.txt`, or any document from an
+   application, printer "Canon LBP2900".
 
-Если принтер не найден («LBP2900 not found on USB»), проверьте кабель и питание и
-запустите `sudo ./install.sh` ещё раз. Удаление: `sudo ./uninstall.sh` из той же папки.
+If the printer is not found ("LBP2900 not found on USB"), check the cable and power and
+run `sudo ./install.sh` again. To remove: `sudo ./uninstall.sh` from the same folder.
 
-## Сборка, проверка, установка
+## Build, test, install
 
-Нужны Xcode Command Line Tools (`xcode-select --install`). Autotools не нужны.
+Requires the Xcode Command Line Tools (`xcode-select --install`). No autotools.
 
 ```bash
-cd ~/Desktop/driver
 ./build.sh
 ```
 
@@ -82,126 +82,129 @@ cd ~/Desktop/driver
 ./test.sh
 ```
 
-`test.sh` делает четыре вещи: round-trip сжатия Hi-SCoA на реальной странице;
-прогон `build/rastertocapt` через эмулятор принтера с полным циклом CAPT
-(IDENT → JOB_BEGIN → START/UPLOAD → SET_PARMS → PRINT_DATA → FIRE → JOB_END);
-декодирование перехваченного потока и побайтное сравнение с растром;
-PNG для глаз в `build/test/test-page-decoded.png`.
+`test.sh` does four things: a Hi-SCoA round trip on a real page; runs
+`build/rastertocapt` against the printer emulator through the full CAPT cycle
+(IDENT → JOB_BEGIN → START/UPLOAD → SET_PARMS → PRINT_DATA → FIRE → JOB_END), plus
+five out-of-paper scenarios (tray runs empty on page 2 of 3; the printer drops the page
+silently; the printer never releases the job; both; the tray stays empty through the
+automatic retry so the button path is exercised); decodes the captured stream and
+compares it with the raster byte for byte; renders `build/test/test-page-decoded.png`.
 
-Установка, принтер должен быть включён и подключён по USB:
+Install, with the printer switched on and connected over USB:
 
 ```bash
 sudo ./install.sh
 ```
 
-Скрипт кладёт фильтр в `/Library/Printers/captdriver/rastertocapt`, PPD в
-`/Library/Printers/PPDs/Contents/Resources/`, находит принтер через `lpinfo -v`
-и создаёт очередь `Canon_LBP2900`. Если принтер не найден, ставит только фильтр
-и PPD; повторите команду, когда подключите принтер, или передайте URI явно:
-`sudo ./install.sh 'usb://Canon/LBP2900?serial=...'`.
+The script puts the filter into `/Library/Printers/captdriver/rastertocapt` and the PPD
+into `/Library/Printers/PPDs/Contents/Resources/`, finds the printer with `lpinfo -v`
+and creates the `Canon_LBP2900` queue. If the printer is not found it installs only the
+filter and the PPD; run the command again once the printer is connected, or pass the URI
+explicitly: `sudo ./install.sh 'usb://Canon/LBP2900?serial=...'`.
 
-Папка `/Library/Printers/` выбрана намеренно: так ставят свои драйверы Brother и
-Canon, и она переживает обновления macOS. `/usr/libexec/cups/filter/` обновления
-затирают.
+`/Library/Printers/` is deliberate: that is where Brother and Canon put their drivers,
+and it survives macOS updates. `/usr/libexec/cups/filter/` is wiped by updates.
 
-Удаление:
+Remove:
 
 ```bash
 sudo ./uninstall.sh
 ```
 
-Перенос на другой Mac без Xcode, Apple Silicon или Intel:
+Move to another Mac without Xcode, Apple Silicon or Intel:
 
 ```bash
 ./package.sh
 ```
 
-Получится `dist/canon-lbp2900-macos-<версия>-universal.tar.gz`; на другом Маке
-распаковать и выполнить `sudo ./install.sh` внутри распакованной папки. Фильтр внутри
-универсальный (arm64 + x86_64), собран с минимальной версией macOS 10.13. Intel-часть
-проверена через Rosetta на эмуляторе: данные страниц и параметры побайтно совпадают
-с arm64-сборкой, различаются только метки времени в командах JOB_SETUP.
+This produces `dist/canon-lbp2900-macos-<version>-universal.tar.gz`; on the other Mac
+unpack it and run `sudo ./install.sh` inside the unpacked folder. The filter is a
+universal binary (arm64 + x86_64) built with a minimum macOS version of 10.13. The Intel
+slice was checked under Rosetta against the emulator: page data and parameters match the
+arm64 build byte for byte, only the timestamps in the JOB_SETUP commands differ.
 
-## Первая печать: что проверить
+## First print: what to check
 
-1. Включите отладку CUPS и смотрите лог во время печати:
+1. Turn on CUPS debugging and watch the log while printing:
    ```bash
    sudo cupsctl LogLevel=debug; tail -f /var/log/cups/error_log | grep CAPT
    ```
-   Выключить: `sudo cupsctl LogLevel=warn`.
-2. Напечатайте страницу с рамкой по краю. Растеризатор Apple `cgpdftoraster`
-   отдаёт только печатную область (у A4 это 4722×6780 px при полях 5 мм),
-   а не весь лист, как Ghostscript на Linux. Фильтр центрирует строку по
-   горизонтали, а по вертикали посылает 6780 строк с нулевым полем. Если
-   отпечаток сдвинут вверх примерно на 5 мм, это место для правки:
-   `paper.c` (`margin_height`) или `HWmargins` в `canon-lbp.drv`.
-3. Проверьте многостраничный документ и ситуацию «кончилась бумага». LBP2900 сам
-   не продолжает: он сбрасывает недопечатанную страницу. Драйвер один раз заново
-   занимает принтер, сбрасывает его и посылает страницу ещё раз (вдруг бумагу уже
-   положили). Если и эта попытка не прошла, загорается кнопка-индикатор и в
-   очереди macOS висит «нет бумаги»: положите бумагу и нажмите кнопку, страница
-   допечатается. Счётчики страниц в логе (`pages a/b/c/d`) сквозные с момента
-   включения принтера, а не по заданию; после переинициализации они обнуляются.
-4. Если задание зависло «печатается» после отмены: `cancel -a Canon_LBP2900`,
-   выключить принтер на 10 с. Счётчики страниц в принтере сбиваются после
-   прерванного задания, это известное поведение captdriver.
+   Turn it off with `sudo cupsctl LogLevel=warn`.
+2. Print a page with a border around the edge. Apple's `cgpdftoraster` rasterises only
+   the imageable area (4722×6780 px for A4 with 5 mm margins), not the whole sheet as
+   Ghostscript does on Linux. The filter centres each line horizontally and sends 6780
+   lines with a zero top margin. If the print is shifted up by about 5 mm, the place to
+   adjust is `paper.c` (`margin_height`) or `HWmargins` in `canon-lbp.drv`.
+3. Check a multi-page document and the out-of-paper case. The LBP2900 does not resume by
+   itself: it drops the unprinted page. The driver re-acquires the printer, re-initialises
+   it and re-sends the page once (paper may already be there). If that attempt fails
+   too, the button LED comes on and the macOS queue shows "out of paper": load paper and
+   press the button, the page finishes. The page counters in the log (`pages a/b/c/d`)
+   count from printer power-on, not per job; re-initialisation resets them to zero.
+4. If a job stays "printing" after being cancelled: `cancel -a Canon_LBP2900`, then
+   switch the printer off for 10 s. The printer's page counters get out of step after an
+   interrupted job; this is known captdriver behaviour.
 
-## Известные ограничения
+## Known limitations
 
-- Пауза после каждой страницы. Драйвер дожидается, пока лист полностью выйдет, и
-  только потом отправляет следующую страницу (так устроен captdriver, страницы не
-  конвейеризуются). Скорость ниже паспортных 12 стр/мин, зато счётчики страниц и
-  обработка «нет бумаги» однозначны.
-- «Кончилась бумага». Что делает живой LBP2900 (зонд `tools/capt-probe.py`,
-  04.09.2026): сбрасывает выстреленную страницу, ставит UNINIT2 (и NOPAPER, если
-  датчик увидел пустой лоток; после последнего листа в кассете может бросить
-  страницу молча, без флагов, через 30 с), рано или поздно сам отпускает задание
-  (бит 0 STATUS0). После этого на все команды, кроме опроса статуса, отвечает
-  кодом `88`; ReserveUnit отвечает `87`, пока задание ещё занято, и `90` на
-  вариант с байтом `02` из Windows-драйвера. Данные страницы в этом состоянии
-  вешают принтер до выключения питания: не помогают ни SOFT_RESET класса
-  принтеров, ни сброс USB-порта. Рабочее восстановление: обычный ReserveUnit →
-  JOB_SETUP → START_1/2/3 → UPLOAD_2 (снимает UNINIT, обнуляет счётчики) → та же
-  страница. Флаги «нет бумаги» после сброса снимаются даже при пустом лотке, и
-  принтер при каждом FIRE заново пробует подать лист, поэтому драйвер делает одну
-  автоматическую повторную попытку, а дальше мигает индикатором (кнопка видна в
-  статусе только при мигании), уходит в GoOffline и ждёт кнопку. Три прежние неудачные сборки:
-  (1) сброс внутри задания без проверки кодов — зависание; (2) пассивное ожидание —
-  принтер не продолжает никогда; (3) новое задание без освобождения / с байтом `02`
-  — `87`/`90`. Эмулятор воспроизводит все варианты, `./test.sh` гоняет пять
-  сценариев. Подтверждено через CUPS на живом принтере 04.09.2026.
-- Код размера бумаги в команде принтера всегда A4: upstream берёт имя размера из
-  поля `MediaType` растра, а не из `cupsPageSizeName`. Размер изображения при этом
-  правильный, для A4 разницы нет; для Letter возможны артефакты.
-- Плотность печати и паузы между страницами: открытые замечания upstream.
-- Прогресс «N из M» в окне очереди macOS у не-AirPrint принтеров не двигается;
-  это ограничение macOS, а не драйвера. Точный счётчик виден в `lpstat` и логе.
-- Замятие и открытая крышка не распознаются (биты статуса не расшифрованы).
+- A pause after every page. The driver waits for the sheet to come out completely before
+  sending the next page (that is how captdriver works; pages are not pipelined). Speed is
+  below the rated 12 ppm, but page counters and out-of-paper handling stay unambiguous.
+- Out of paper. What a real LBP2900 does (probe `tools/capt-probe.py`, 2026-09-04): it
+  drops the fired page, sets UNINIT2 (and NOPAPER if its sensor saw the empty tray; after
+  the last sheet in the cassette it may drop the page silently, without flags, after
+  30 s), and sooner or later releases the job on its own (STATUS0 bit 0). From then on
+  every command except status polls answers `88`; ReserveUnit answers `87` while the job
+  is still held and `90` for the byte-`02` variant the Windows driver uses. Page data
+  sent in that state hangs the printer until a power cycle: neither the printer-class
+  SOFT_RESET nor a USB port reset helps. The working recovery: plain ReserveUnit →
+  JOB_SETUP → START_1/2/3 → UPLOAD_2 (clears UNINIT, resets the counters) → the same
+  page again. The no-paper flags clear after the reset even with an empty tray, and the
+  printer tries to feed on every FIRE, so the driver makes one automatic retry and then
+  blinks the LED (the button is only reported while the LED blinks), goes offline and
+  waits for the button. Three earlier builds failed: (1) reset inside the job without
+  checking result codes: hang; (2) passive waiting: the printer never resumes; (3) a new
+  job without releasing the old one / with byte `02`: `87`/`90`. The emulator reproduces
+  every variant; `./test.sh` runs six scenarios. Confirmed through CUPS on the real
+  printer on 2026-09-04.
+- The paper-size code in the printer command is always A4: upstream takes the size name
+  from the raster's `MediaType` field instead of `cupsPageSizeName`. The image size is
+  right, so for A4 it makes no difference; Letter may show artefacts.
+- Print density: an open upstream issue.
+- The "N of M" progress in the macOS queue window does not move for non-AirPrint
+  printers; that is a macOS limitation, not the driver's. The exact count is visible in
+  `lpstat` and the log.
+- Paper jams and an open cover are not recognised (those status bits are not decoded).
 
-## Как это устроено
+## How it works
 
-Цепочка CUPS: приложение → PDF → `cgpdftoraster` → `rastertocapt` → бэкенд `usb` → принтер.
-`rastertocapt` режет страницу на полосы по 70 строк, сжимает их Hi-SCoA
-(SPECS, раздел 3), и ведёт двусторонний диалог с принтером: запросы статуса
-идут через back-channel (fd 3) и side-channel (fd 4) CUPS, поэтому фильтру
-не нужны привилегии и свой USB-стек.
+The CUPS chain: application → PDF → `cgpdftoraster` → `rastertocapt` → `usb` backend →
+printer. `rastertocapt` cuts the page into 70-line bands, compresses them with Hi-SCoA
+(SPECS, section 3), and holds a two-way conversation with the printer: status requests go
+through the CUPS back channel (fd 3) and side channel (fd 4), so the filter needs no
+privileges and no USB stack of its own.
 
-Патч меняет только стратегию опроса статуса: upstream читает расширенный статус
-(команда `0xA0A8`, там счётчики страниц) лишь при флаге `XSTATUS_CHNG`, а на LBP2900
-этот флаг, по данным обоих портов, не выставляется, и ожидание конца страницы
-зависает. Патч читает расширенный статус всегда, как для LBP3010.
+The first patch changes only the status-polling strategy: upstream reads the extended
+status (command `0xA0A8`, which carries the page counters) only when the `XSTATUS_CHNG`
+flag is set, and on the LBP2900 that flag, according to both ports, never appears, so the
+end-of-page wait hangs. The patch reads the extended status always, as for the LBP3010.
 
-## Откуда что взялось
+## Provenance
 
-- captdriver: `vendor/captdriver/UPSTREAM.txt` (форк mounaiban, коммит 6271924, 2022-10-14).
-  Оригинал: https://github.com/agalakhov/captdriver
-- Патч: https://github.com/duy12i1i7/canon-LBP2900-for-macOS, `patches/lbp2900-macos.patch`,
-  коммит 12953b0 (2026-07-07). Сверх него патч убирает `#define _POSIX_C_SOURCE 199309L`
-  из `src/std.h`: эта строка есть в форке mounaiban (в оригинале agalakhov её нет),
-  на macOS она скрывает типы `u_char`/`u_int` в системных заголовках, и сборка
-  падает; автор порта обходил это флагом `-D_DARWIN_C_SOURCE`, здесь строка просто удалена.
-- Тот же порт предлагает прекомпилированный бинарник, LaunchDaemon для
-  «самолечения» и приложение в строке меню. Здесь всё собирается из исходников
-  на этом Маке, а фильтр лежит там, где его не трогают обновления, поэтому демон не нужен.
-- Формат side-channel (длина big-endian) сверен с `cups/sidechannel.c` CUPS 2.3.3.
-- Протокол CAPT и статусный рекорд: `vendor/captdriver/SPECS`.
+- captdriver: `vendor/captdriver/UPSTREAM.txt` (mounaiban fork, commit 6271924,
+  2022-10-14). Original: https://github.com/agalakhov/captdriver
+- Patch: https://github.com/duy12i1i7/canon-LBP2900-for-macOS, `patches/lbp2900-macos.patch`,
+  commit 12953b0 (2026-07-07). On top of it the patch removes
+  `#define _POSIX_C_SOURCE 199309L` from `src/std.h`: the line exists in the mounaiban
+  fork (not in agalakhov's original), on macOS it hides the `u_char`/`u_int` types in the
+  system headers and the build fails; the port's author worked around it with
+  `-D_DARWIN_C_SOURCE`, here the line is simply removed.
+- The same port offers a precompiled binary, a "self-healing" LaunchDaemon and a menu-bar
+  app. Here everything is built from source on this Mac and the filter lives where
+  updates do not touch it, so no daemon is needed.
+- The side-channel wire format (big-endian length) was checked against
+  `cups/sidechannel.c` of CUPS 2.3.3.
+- The CAPT protocol and the status record: `vendor/captdriver/SPECS`.
+- The out-of-paper sequence: a USB capture of the Canon Windows driver on an LBP2900
+  (HighwayStar, linux.org.ru, 2013) and live experiments with `tools/capt-probe.py`,
+  see `docs/research-notes.md`.

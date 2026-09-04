@@ -1,137 +1,143 @@
-# Заметки по исследованию (сентябрь 2026)
+# Research notes (September 2026)
 
-Что выяснено перед сборкой и насколько это проверено. Факты собирали агенты с
-веб-доступом; сводки «Canon» и «captdriver» перепроверены вторым проходом по
-первоисточникам (58 из 67 утверждений подтверждены дословно, расхождения только в
-мелочах вроде числа веток репозитория). Сводки «альтернативы» и «протокол»
-второй проход не прошли из-за лимитов сессии; они помечены ниже как непроверенные.
+What was established before building, and how well it is verified. The facts were
+gathered by agents with web access; the "Canon" and "captdriver" summaries were
+re-checked in a second pass against the primary sources (58 of 67 claims confirmed
+verbatim, discrepancies only in details such as the number of branches in a repository).
+The "alternatives" and "protocol" summaries did not get a second pass because of session
+limits; they are marked below as unverified.
 
-## Canon (проверено)
+## Canon (verified)
 
-- У Canon нет и не было драйвера LBP2900/2900B для macOS. Страницы модели
-  (Canon Asia, India, Europe, UK) предлагают только Windows (R1.50 Ver.3.30, 2015/2017)
-  и Linux V2.71 (15.05.2017), пункта macOS в выборе ОС нет.
+- Canon has never had an LBP2900/2900B driver for macOS. The model pages (Canon Asia,
+  India, Europe, UK) offer only Windows (R1.50 Ver.3.30, 2015/2017) and Linux V2.71
+  (2017-05-15); there is no macOS entry in the OS selector.
   https://asia.canon/en/support/LASER%20SHOT%20LBP2900__%202900B/model
-- Свежий пакет «CAPT Printer Driver & Utilities for Mac V10.0.9» (28.08.2026,
-  macOS 10.13.6–26) поддерживает LBP3000, 3050, 3150, 3250, 3300, 3310, 3500,
-  5000/5050/5100/5300, 6000/6018B/6200d/6300dn, 7018C/7200, 9100Cdn. LBP2900 нет.
-  Более старые V3.90 и V3.93 тоже без LBP2900. https://in.canon/en/support/0100999320
-- На этом Маке стоит именно такой пакет: `jp.co.canon.CUPSCAPT.sub.pkg` 10.0.8,
-  установлен 04.10.2025, PPD для LBP2900 в нём нет (проверено локально).
-- Народный хак «поставить драйвер LBP3000 и хекс-патчить `captmoncnab3` и
-  `CnAC28B9.DAT`» работал до Catalina/Big Sur; по Sonoma и Sequoia в темах Apple
-  Community только неудачи (14.1, 14.4.1, 14.5, 15.3.1).
+- The current "CAPT Printer Driver & Utilities for Mac V10.0.9" (2026-08-28,
+  macOS 10.13.6–26) supports the LBP3000, 3050, 3150, 3250, 3300, 3310, 3500,
+  5000/5050/5100/5300, 6000/6018B/6200d/6300dn, 7018C/7200, 9100Cdn. No LBP2900.
+  The older V3.90 and V3.93 lack it too. https://in.canon/en/support/0100999320
+- Exactly that package is installed on this Mac: `jp.co.canon.CUPSCAPT.sub.pkg` 10.0.8,
+  installed 2025-10-04; it contains no PPD for the LBP2900 (checked locally).
+- The folk hack "install the LBP3000 driver and hex-patch `captmoncnab3` and
+  `CnAC28B9.DAT`" worked up to Catalina/Big Sur; for Sonoma and Sequoia the Apple
+  Community threads report only failures (14.1, 14.4.1, 14.5, 15.3.1).
 
-## captdriver (проверено)
+## captdriver (verified)
 
-- Оригинал agalakhov/captdriver остановился на 175f8ff (08.10.2022, 0.1.3), README
-  называет проект «пассивно поддерживаемым». Форк mounaiban: master 6271924
-  (14.10.2022, 0.1.4.1), активность в issues/wiki продолжается (push 13.08.2026).
-- LBP2900 зарегистрирован со статусом WORKS, тестирован на x86-64 и ARMv7 Linux.
-  Известные проблемы: зацикливание опроса статуса `0xE0A0` на 32-битных
-  системах (mounaiban #3), зависание «Rendering completed» и лечение
-  выключением принтера (agalakhov #7), пониженная плотность печати
-  (mounaiban #33, открыт).
-- Код не зависит от Linux: только CUPS raster API, `cupsBackChannelRead`,
-  `cupsSideChannelDoRequest` (DRAIN_OUTPUT, GET_DEVICE_ID). USB-бэкенд Apple
-  (`usb-darwin.c`) эти команды реализует; на этом Маке подтверждено по строкам
-  в `/usr/libexec/cups/backend/usb`.
-- Три независимых порта на macOS, все меняют одно и то же: LBP2900 переводится
-  на безусловное чтение расширенного статуса (`capt_get_xstatus_only`).
-  HardNorth/captdriver (27.09.2025, PR #47 в mounaiban закрыт без слияния),
-  duy12i1i7/canon-LBP2900-for-macOS (13 коммитов 07.07.2026, автор проверял на
-  macOS 26 Apple Silicon; один сторонний PR сообщает «работает на M5»),
-  bechou0410/canon-lbp2900-macos27-driver (июнь 2026, требует установленного
-  драйвера Canon LBP3000).
-- Никто не публиковал результат именно на macOS 14 Sonoma.
+- The original agalakhov/captdriver stopped at 175f8ff (2022-10-08, 0.1.3); its README
+  calls the project "passively maintained". The mounaiban fork: master 6271924
+  (2022-10-14, 0.1.4.1), issues/wiki still active (push 2026-08-13).
+- The LBP2900 is registered as WORKS, tested on x86-64 and ARMv7 Linux. Known problems:
+  the `0xE0A0` status poll looping on 32-bit systems (mounaiban #3), a "Rendering
+  completed" hang cured by switching the printer off (agalakhov #7), reduced print
+  density (mounaiban #33, open).
+- The code does not depend on Linux: only the CUPS raster API, `cupsBackChannelRead`,
+  `cupsSideChannelDoRequest` (DRAIN_OUTPUT, GET_DEVICE_ID). Apple's USB backend
+  (`usb-darwin.c`) implements these; confirmed on this Mac from the strings in
+  `/usr/libexec/cups/backend/usb`.
+- Three independent macOS ports, all changing the same thing: the LBP2900 is switched to
+  unconditional reading of the extended status (`capt_get_xstatus_only`).
+  HardNorth/captdriver (2025-09-27, PR #47 in mounaiban closed without merging),
+  duy12i1i7/canon-LBP2900-for-macOS (13 commits on 2026-07-07, the author tested on
+  macOS 26 Apple Silicon; one third-party PR reports "works on M5"),
+  bechou0410/canon-lbp2900-macos27-driver (June 2026, requires the Canon LBP3000 driver
+  to be installed).
+- Nobody has published a result specifically on macOS 14 Sonoma.
 
-## Альтернативы (не перепроверено вторым проходом)
+## Alternatives (no second pass)
 
-- Linux-принтсервер (Raspberry Pi) с captdriver и раздачей через IPP/Bonjour:
-  самый предсказуемый путь, но у captdriver на ARM своя история зависаний.
-  Официальный Linux-драйвер Canon V2.71 только x86 (i386/x86_64) с проприетарными
-  блобами, на Pi не идёт.
-- Виртуальные машины на Apple Silicon не помогают: Windows-драйвер Canon только
-  x86, в ARM-гостя драйверы принтеров не ставятся; эмуляция x86 медленная и
-  без подтверждённых отчётов.
-- Коммерческих драйверов с LBP2900 нет (PrintFab только струйные, Gutenprint
-  без CAPT).
-- В OpenPrinting CUPS 2.4.17 (апрель 2026) починена гонка DRAIN_OUTPUT в
-  libusb-бэкенде Linux; к macOS (IOKit-бэкенд) не относится.
+- A Linux print server (Raspberry Pi) with captdriver, shared over IPP/Bonjour: the most
+  predictable route, but captdriver on ARM has its own history of hangs. Canon's official
+  Linux driver V2.71 is x86 only (i386/x86_64) with proprietary blobs; it does not run on
+  a Pi.
+- Virtual machines on Apple Silicon do not help: Canon's Windows driver is x86 only,
+  printer drivers do not install in an ARM guest; x86 emulation is slow and has no
+  confirmed reports.
+- No commercial driver covers the LBP2900 (PrintFab does inkjets only, Gutenprint has no
+  CAPT).
+- OpenPrinting CUPS 2.4.17 (April 2026) fixed a DRAIN_OUTPUT race in the Linux libusb
+  backend; it does not apply to macOS (IOKit backend).
 
-## Протокол (не перепроверено вторым проходом)
+## Protocol (no second pass)
 
-- LBP2900 — CAPT 2.1 с сжатием Hi-SCoA, которое в `SPECS` описано полностью.
-  Командный слой описан хуже: из ~25 опкодов, которые использует драйвер,
-  в SPECS разобраны не все; биты STATUS5/6 и часть байтов параметров
-  страницы «?».
-- Реверс делали сниффингом USB под Windows и прогоном фирменного `captfilter`
-  на известных картинках: Boichat 2004 (LBP-810), Galakhov 2010–2013 (LBP-2900),
-  Bolsee 2010 (LBP-3010). Отдельная реализация CAPT v1 (darkvision77/libcapt,
-  2025–2026, только LBP800–3200) заняла у одного разработчика около полугода.
-- Вывод: писать с нуля означало бы повторить этот путь без нового знания.
+- The LBP2900 is CAPT 2.1 with Hi-SCoA compression, which `SPECS` describes completely.
+  The command layer is described less well: of the ~25 opcodes the driver uses, not all
+  are worked out in SPECS; the STATUS5/6 bits and some page-parameter bytes are `?`.
+- The reverse engineering was done by sniffing USB under Windows and running Canon's
+  `captfilter` on known images: Boichat 2004 (LBP-810), Galakhov 2010–2013 (LBP-2900),
+  Bolsee 2010 (LBP-3010). A separate CAPT v1 implementation (darkvision77/libcapt,
+  2025–2026, LBP800–3200 only) took one developer about half a year.
+- Conclusion: writing from scratch would mean repeating that path without new knowledge.
 
-## Локальные проверки на этом Маке (04.09.2026)
+## Local checks on this Mac (2026-09-04)
 
-- macOS 14.6.1, arm64, CUPS 2.3.4, Xcode 16; заголовки `cups/raster.h`,
-  `sidechannel.h`, `ppd.h` есть в SDK; `ppdc` и `cupsfilter` есть в системе.
-- Оригинальное дерево agalakhov собирается одной командой `cc -std=c99 -pedantic`
-  без правок. Форк mounaiban (vendor) с теми же флагами не собирается из-за
-  `#define _POSIX_C_SOURCE 199309L` в `std.h` (скрывает `u_char`/`u_int` в
-  заголовках Apple); патч эту строку убирает. Бинарник ad-hoc подписан линкером,
-  как и нужно для запуска.
-- Round-trip Hi-SCoA на реальной странице A4: 0 ошибок.
-- Полный прогон через эмулятор принтера (`tools/capt-fake-printer.py`):
-  все этапы CAPT пройдены, страница декодирована обратно, 6780 строк совпали
-  побайтно. Формат side-channel (длина big-endian) сверен с `cups/sidechannel.c`.
-- `cgpdftoraster` Apple отдаёт растр печатной области (4722×6780 px для A4 с
-  полями 5 мм), а не всего листа; со «старым» PPD из корня репозитория (поля 0)
-  текст у левого края обрезался, поэтому PPD компилируется из `canon-lbp.drv`.
-- В том же старом PPD экономия тонера задаётся через `cupsCompression`, а код
-  читает `cupsInteger0`, который растеризатор Apple выставляет в 1: тонер-сейв
-  включался бы всегда. С PPD из drv значение корректное (0/1 по выбору).
+- macOS 14.6.1, arm64, CUPS 2.3.4, Xcode 16; the `cups/raster.h`, `sidechannel.h`,
+  `ppd.h` headers are in the SDK; `ppdc` and `cupsfilter` ship with the system.
+- The original agalakhov tree builds with a single `cc -std=c99 -pedantic` without
+  changes. The mounaiban fork (vendor) with the same flags fails because of
+  `#define _POSIX_C_SOURCE 199309L` in `std.h` (it hides `u_char`/`u_int` in Apple's
+  headers); the patch removes that line. The binary is ad-hoc signed by the linker, which
+  is all that is needed to run.
+- Hi-SCoA round trip on a real A4 page: 0 errors.
+- Full run through the printer emulator (`tools/capt-fake-printer.py`): every CAPT stage
+  passed, the page decoded back, 6780 lines matched byte for byte. The side-channel wire
+  format (big-endian length) checked against `cups/sidechannel.c`.
+- Apple's `cgpdftoraster` returns a raster of the imageable area (4722×6780 px for A4
+  with 5 mm margins), not of the whole sheet; with the "old" PPD from the repository root
+  (zero margins) text at the left edge was clipped, so the PPD is compiled from
+  `canon-lbp.drv`.
+- In that same old PPD toner saving is set through `cupsCompression` while the code reads
+  `cupsInteger0`, which Apple's rasteriser sets to 1: toner save would always be on. With
+  the PPD from the drv the value is correct (0/1 as selected).
 
-## «Кончилась бумага» на живом LBP2900 (04.09.2026)
+## Out of paper on a real LBP2900 (2026-09-04)
 
-- Задание 73 (сборка с перезапуском job после кнопки): после FIRE страницы 3 при
-  пустом лотке STATUS0 = `8A12` (NOPAPER1 + UNINIT2), STATUS1 = `4084` → `4000`
-  (NOPAPER2, PRINTING гаснет через 3 с), счётчик `page_out` не растёт. Кнопка видна
-  как STATUS1 бит 5 (`4020`) и STATUS2 `0080`. Загрузка бумаги флаги не снимает.
-- После кнопки новый job без освобождения старого: IDENT и START_0 отвечают
-  штатно, JOB_BEGIN (ReserveUnit) → `87 00 00 00`, все дальнейшие команды
-  (E1A2, E1A1, E0A3, E0A2, E0A4, E0A5) → `88 00`, на данные страницы принтер не
-  отвечает («no reply from printer», далее USB transaction timeout). Вывод: байт 0
-  ответа — код результата, `00` = принято; принтер в ошибке отвергает команды,
-  а данные в этом состоянии вешают его (то же писал Galakhov).
-- Захват USB драйвера Canon под Windows на LBP2900 при пустом лотке (HighwayStar,
-  paste.org.ru/?m77anq и linux.org.ru/forum/linux-hardware/4868236, 09.2013):
-  `E1A1 fg=06` → `E0A9` (ReleaseUnit) → ~8 с опроса `A0A8`/`A0A1` → `A2A0` с
-  байтом 0 = `02` → `E1A1 fg=02` → `E0A3`, `E0A2`, `E0A4` → `E0A5` (GoOnline) →
-  `E1A2` с байтами `00 00 01 02 01 00 … 01 00` (совпадает с `lbp2900_gpio_blink`)
-  → `E0A6 06 00 00 00` (GoOffline) → опрос `E0A0` до кнопки → `E1A1` → `E0A3`,
-  `E0A2`, `E0A4` … → `D0A9` + данные той же страницы. Отдельной команды FIRE без
-  повторной передачи страницы нет.
-- Патч `lbp2900-paper-out-recovery.patch` повторяет эту схему в `lbp2900_wait_user`
-  (флаг `lbp2900_page_dropped` ставит `page_epilogue`). Значение `fg=2` и `page=0`
-  в JOB_SETUP после кнопки взяты по аналогии, точные байты Windows после кнопки в
-  захвате не сохранились.
-- Эмулятор `tools/capt-fake-printer.py` теперь моделирует занятость устройства
-  (`87` на повторный ReserveUnit, затем `88`), зависание при данных в состоянии
-  ошибки, защёлку NOPAPER до UPLOAD_2 и залипание кнопки до `E1A2 init`. Сборка
-  задания 73 на нём падает воспроизводимо, текущая проходит (`./test.sh`, шаг 2b).
-- Зависший принтер (после данных страницы в состоянии ошибки, задание 75) не
-  оживить со стороны хоста: bulk-запись висит по таймауту, класс-запрос
-  SOFT_RESET (bRequest 2) отвергается STALL, сброс USB-порта (переэнумерация)
-  не помогает (`tools/capt-probe.py usb-reset`, 04.09.2026). Только выключение
-  питания. Вывод для драйвера: ни при каких условиях не слать данные страницы,
-  пока принтер отвечает кодами отказа или держит NOPAPER/UNINIT.
-- Зонд `capt-probe.py paper-out`, прогон 3 (04.09.2026 09:42): кассета пуста
-  после последнего листа. После FIRE принтер 30 с не подавал лист (PRINTING нет,
-  NOPAPER нет), затем S0 `8A11`: бит 0 (задание отпущено) + UNINIT2, счётчик
-  printing не сдвинулся. Загрузка бумаги и кнопка без мигания в статусе не видны.
-  В этом состоянии: GPIO/JOB_SETUP/START/UPLOAD/JOB_END → `88`; ReserveUnit `02`
-  → `90`; ReserveUnit `00` → `00` (бит 0 снялся); JOB_SETUP fg=2, START_1/2/3,
-  UPLOAD_2 → `00`, UNINIT снят, счётчики 0; страница послана заново и вышла.
-  Итог: `87` = устройство ещё занято, `88` = команда недопустима без занятого
-  устройства, `90` = вариант `02` не принят. В патч добавлен флаг `CAPT_FL_NOJOB`
-  (бит 0 STATUS0) и проверка `capt_last_result` после каждого шага.
+- Job 73 (the build that restarted the job after the button): after FIRE of page 3 with
+  an empty tray, STATUS0 = `8A12` (NOPAPER1 + UNINIT2), STATUS1 = `4084` → `4000`
+  (NOPAPER2; PRINTING goes off after 3 s), the `page_out` counter does not advance. The
+  button shows as STATUS1 bit 5 (`4020`) and STATUS2 `0080`. Loading paper does not clear
+  the flags.
+- After the button, a new job without releasing the old one: IDENT and START_0 answer
+  normally, JOB_BEGIN (ReserveUnit) → `87 00 00 00`, every following command (E1A2,
+  E1A1, E0A3, E0A2, E0A4, E0A5) → `88 00`, and the printer does not answer page data at
+  all ("no reply from printer", then USB transaction timeouts). Conclusion: byte 0 of a
+  reply is a result code, `00` = accepted; a printer in error rejects commands, and data
+  in that state hangs it (as Galakhov wrote).
+- USB capture of the Canon Windows driver on an LBP2900 with an empty tray (HighwayStar,
+  paste.org.ru/?m77anq and linux.org.ru/forum/linux-hardware/4868236, September 2013):
+  `E1A1 fg=06` → `E0A9` (ReleaseUnit) → ~8 s of `A0A8`/`A0A1` polling → `A2A0` with
+  byte 0 = `02` → `E1A1 fg=02` → `E0A3`, `E0A2`, `E0A4` → `E0A5` (GoOnline) → `E1A2`
+  with bytes `00 00 01 02 01 00 … 01 00` (identical to `lbp2900_gpio_blink`) →
+  `E0A6 06 00 00 00` (GoOffline) → `E0A0` polling until the button → `E1A1` → `E0A3`,
+  `E0A2`, `E0A4` … → `D0A9` + the same page's data. There is no separate FIRE without
+  re-sending the page. The capture contains only OUT packets; the printer's replies are
+  not in it.
+- A hung printer (page data sent in the error state, job 75) cannot be revived from the
+  host: bulk writes time out, the printer-class SOFT_RESET request (bRequest 2) is
+  answered with a STALL, a USB port reset (re-enumeration) does not help
+  (`tools/capt-probe.py usb-reset`, 2026-09-04). Only a power cycle. Rule for the driver:
+  never send page data while the printer answers with rejection codes or holds
+  NOPAPER/UNINIT.
+- Probe `capt-probe.py paper-out`, run 3 (2026-09-04 09:42): the cassette empty after the
+  last sheet. After FIRE the printer did not feed for 30 s (no PRINTING, no NOPAPER),
+  then S0 `8A11`: bit 0 (job released) + UNINIT2, the printing counter did not move.
+  Loading paper and pressing the button are not visible in the status without the LED
+  blinking. In this state: GPIO/JOB_SETUP/START/UPLOAD/JOB_END → `88`; ReserveUnit `02`
+  → `90`; ReserveUnit `00` → `00` (bit 0 cleared); JOB_SETUP fg=2, START_1/2/3, UPLOAD_2
+  → `00`, UNINIT cleared, counters 0; the page was re-sent and came out. Summary: `87` =
+  unit still held, `88` = command not allowed with no unit reserved, `90` = ReserveUnit
+  refused. The patch gained the `CAPT_FL_NOJOB` flag (STATUS0 bit 0) and a
+  `capt_last_result` check after every step.
+- CUPS job 78 (the build with the verified sequence): with NOPAPER flagged, ReserveUnit
+  `00` answered `90` for about 10 s (7–10 attempts one second apart) and then `00`: the
+  `90` is the printer's own paper check after a drop, repeated every ~15 s while the tray
+  stays empty. After UPLOAD_2 the NOPAPER flags cleared even though the tray was still
+  empty, and the next FIRE found out again. Hence the final design: one automatic re-send,
+  then blink, GoOffline and wait for the button before every further attempt. Switching
+  the LED off on the PRINTING flag was wrong: the printer raises it for a moment on every
+  feed attempt before it knows the tray is empty.
+- The emulator `tools/capt-fake-printer.py` models all of this: reservation state and the
+  `87`/`88`/`90` codes, the `90` window after a drop, the hang on data in an error state,
+  NOPAPER cleared by UPLOAD_2, a silent drop, a printer that never releases the job, and
+  a button that is only visible while the LED blinks. `./test.sh` runs six scenarios.
