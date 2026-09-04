@@ -10,8 +10,9 @@ to the printer through the stock CUPS USB backend.
 printing on a real LBP2900 (device id `MFG:Canon;MDL:LBP2900;CMD:CAPT;VER:2.1`):
 single- and multi-page jobs, margins match the screen. Out-of-paper handling works on
 the real printer too (2026-09-04, through CUPS): one automatic retry, then the button
-LED comes on and printing resumes when the button is pressed. Before any live test the
-filter was run against an LBP2900 emulator (`tools/capt-fake-printer.py`): the Hi-SCoA
+LED comes on and printing resumes when the button is pressed. Photos and screenshots
+print correctly since 0.2.3 (confirmed from an Intel Mac on macOS 12.6). Before any live
+test the filter was run against an LBP2900 emulator (`tools/capt-fake-printer.py`): the Hi-SCoA
 stream decoded back to the original page byte for byte.
 
 ## Why not a driver from scratch
@@ -169,7 +170,7 @@ arm64 build byte for byte, only the timestamps in the JOB_SETUP commands differ.
   job without releasing the old one / with byte `02`: `87`/`90`. The emulator reproduces
   every variant; `./test.sh` runs six scenarios. Confirmed through CUPS on the real
   printer on 2026-09-04.
-- Photos and other dense pages (0.2.3, awaiting confirmation on a real printer). The
+- Photos and other dense pages (fixed in 0.2.3, confirmed on a real LBP2900 from an Intel Mac, macOS 12.6). The
   LBP2900 has 2 MB of memory, not expandable, and a page has to fit into it as Hi-SCoA
   data. Hi-SCoA was designed for the regular screens of Canon's own driver; Apple's
   `cgpdftoraster` halftones with error diffusion, which does not compress at all: a
