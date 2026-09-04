@@ -11,7 +11,9 @@ for A4 with the shipped PPD 4722 x 6780 px at 591 bytes per line.
 import struct
 import sys
 
-SYNC = {b'RaSt': '<', b'tSaR': '>', b'RaS2': '<', b'2SaR': '>', b'RaS3': '<', b'3SaR': '>'}
+# the sync word is written as a native 32-bit int: 'RaSt'/'RaS2'/'RaS3' in the file means big-endian,
+# the reversed spelling little-endian (cups/raster.h)
+SYNC = {b'RaSt': '>', b'tSaR': '<', b'RaS2': '>', b'2SaR': '<', b'RaS3': '>', b'3SaR': '<'}
 
 
 def main():
