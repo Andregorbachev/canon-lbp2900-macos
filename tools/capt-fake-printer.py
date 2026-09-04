@@ -289,7 +289,8 @@ class Printer:
             if self.no_paper or self.uninit:
                 self.errors.append(f'FIRE page {page} while the printer is not ready')
                 self.mark(f'FIRE page {page} ignored (not ready)')
-            elif self.paper_out_page and self.pages and len(self.pages) == self.paper_out_page and self.page_out < page:
+            elif self.tray_empty or (self.paper_out_page and self.pages and len(self.pages) == self.paper_out_page and self.page_out < page):
+                # the tray is (or just ran) empty: the page is dropped, whatever attempt this is
                 self.tray_empty = True
                 self.page_printing = self.page_out          # real unit: the printing counter does not advance for a dropped page
                 self.no_paper = not self.paper_out_silent   # latched until UPLOAD_2

@@ -68,6 +68,17 @@ for variant in "silent:--paper-out-silent" "never-release:--release-after-polls=
     grep -q 'RESULT: PASS' "$OUT/fake-printer-paper-out-$name.log"
 done
 
+echo "==> 2d   Tray stays empty through the automatic retry: LED must come on and the page wait for the button"
+python3 "$DIR/tools/capt-fake-printer.py" --filter "$FILTER" --raster "$OUT/three-pages.ras" \
+    --paper-out-page 2 --paper-out-polls 40 \
+    --log "$OUT/rastertocapt-paper-out-button.log" --timeout 240 \
+    > "$OUT/fake-printer-paper-out-button.log"
+grep -E 'RESULT' "$OUT/fake-printer-paper-out-button.log"
+grep -q 'RESULT: PASS' "$OUT/fake-printer-paper-out-button.log"
+grep -q 'user pressed the blinking button' "$OUT/fake-printer-paper-out-button.log" || { echo "!! the button path was not exercised"; exit 1; }
+drops=$(grep -o 'page dropped' "$OUT/fake-printer-paper-out-button.log" | wc -l | tr -d ' ')
+[ "$drops" -eq 2 ] || { echo "!! expected exactly 2 drops (one automatic retry), got $drops"; exit 1; }
+
 echo "==> 3/4  Decode the CAPT stream and compare with the input raster"
 "$DIR/build/tools/captdefilter" "$OUT/test-page.capt" > "$OUT/test-page-decoded.pbm" 2> "$OUT/captdefilter.log"
 python3 "$DIR/tools/compare-raster.py" "$OUT/test-page.ras" "$OUT/test-page-decoded.pbm"

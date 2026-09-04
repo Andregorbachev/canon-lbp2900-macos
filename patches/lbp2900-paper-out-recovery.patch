@@ -1,6 +1,6 @@
 diff -ruN captdriver/src/capt-command.c captdriver/src/capt-command.c
 --- captdriver/src/capt-command.c	2026-09-04 09:49:13
-+++ captdriver/src/capt-command.c	2026-09-04 10:34:26
++++ captdriver/src/capt-command.c	2026-09-04 10:43:39
 @@ -22,6 +22,7 @@
  #include "std.h"
  #include "word.h"
@@ -38,7 +38,7 @@ diff -ruN captdriver/src/capt-command.c captdriver/src/capt-command.c
  		if (copysize > capt_iosize)
 diff -ruN captdriver/src/capt-command.h captdriver/src/capt-command.h
 --- captdriver/src/capt-command.h	2026-09-04 09:49:13
-+++ captdriver/src/capt-command.h	2026-09-04 10:34:26
++++ captdriver/src/capt-command.h	2026-09-04 10:43:39
 @@ -19,6 +19,7 @@
  
  #pragma once
@@ -64,7 +64,7 @@ diff -ruN captdriver/src/capt-command.h captdriver/src/capt-command.h
  void capt_sendrecv(uint16_t cmd, const void *buf, size_t size, void *reply, size_t *reply_size);
 diff -ruN captdriver/src/capt-status.h captdriver/src/capt-status.h
 --- captdriver/src/capt-status.h	2026-09-04 09:49:13
-+++ captdriver/src/capt-status.h	2026-09-04 10:34:26
++++ captdriver/src/capt-status.h	2026-09-04 10:43:39
 @@ -42,6 +42,9 @@
  	CAPT_FL_BUSY         = _FL(0, 7),
  	CAPT_FL_UNINIT1      = _FL(0, 5),
@@ -77,7 +77,7 @@ diff -ruN captdriver/src/capt-status.h captdriver/src/capt-status.h
  	CAPT_FL_PROCESSING   = _FL(0, 0),
 diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
 --- captdriver/src/prn_lbp2900.c	2026-09-04 09:49:13
-+++ captdriver/src/prn_lbp2900.c	2026-09-04 10:34:26
++++ captdriver/src/prn_lbp2900.c	2026-09-04 10:43:39
 @@ -62,6 +62,12 @@
  	0x00, 0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00
  };
@@ -91,7 +91,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  static const uint8_t magicbuf_2[] = {
  	0xEE, 0xDB, 0xEA, 0xAD, 0x00, 0x00, 0x00, 0x00,
  	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-@@ -130,6 +136,24 @@
+@@ -130,6 +136,27 @@
  	capt_sendrecv(CAPT_JOB_SETUP, buf, sizeof(buf), NULL, 0);
  }
  
@@ -100,6 +100,9 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
 +static bool lbp2900_page_dropped = false;
 +/* LED left blinking by the paper-out recovery; switched off when a page comes out. */
 +static bool lbp2900_led_blinking = false;
++/* How many times the current page has been dropped; the first drop gets one
++ * automatic re-send, after that the LED comes on and we wait for the button. */
++static unsigned lbp2900_drops = 0;
 +
 +/* START_1/2/3 + UPLOAD_2: (re)initialise the engine. UPLOAD_2 also resets the
 + * page counters in the status record and drops a page held in the printer. */
@@ -116,7 +119,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  static void lbp2900_job_prologue(struct printer_state_s *state)
  {
  	(void) state;
-@@ -313,14 +337,8 @@
+@@ -313,14 +340,8 @@
  
  	status = lbp2900_get_status(state->ops);
  	if (FLAG(status, CAPT_FL_UNINIT1) || FLAG(status, CAPT_FL_UNINIT2)) {
@@ -133,7 +136,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  	}
  
  	for (unsigned polls = 0; ; ++polls) {
-@@ -347,23 +365,23 @@
+@@ -347,23 +368,23 @@
  
  static bool lbp2900_page_epilogue(struct printer_state_s *state, const struct page_dims_s *dims)
  {
@@ -167,7 +170,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  	}
  	send_job_start(2, status->page_decoding);
  	lbp2900_wait_ready(state->ops);
-@@ -374,33 +392,56 @@
+@@ -374,33 +395,51 @@
  
  	send_job_start(6, status->page_decoding);
  
@@ -185,17 +188,12 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
 +				capt_sendrecv(CAPT_GPIO, lbp2900_gpio_init, ARRAY_SIZE(lbp2900_gpio_init), NULL, 0);
 +				lbp2900_led_blinking = false;
 +			}
++			lbp2900_drops = 0;
  			fprintf(stderr, "STATE: -media-empty\n");
  			return true;
  		}
 -		if (FLAG(status, CAPT_FL_NOPAPER2) || FLAG(status, CAPT_FL_NOPAPER1)) {
 +		bool nopaper = FLAG(status, CAPT_FL_NOPAPER2) || FLAG(status, CAPT_FL_NOPAPER1);
-+		/* Paper is moving: the tray was refilled, stop blinking right away rather
-+		 * than when the sheet is fully out. */
-+		if (lbp2900_led_blinking && FLAG(status, CAPT_FL_PRINTING) && ! nopaper) {
-+			capt_sendrecv(CAPT_GPIO, lbp2900_gpio_init, ARRAY_SIZE(lbp2900_gpio_init), NULL, 0);
-+			lbp2900_led_blinking = false;
-+		}
 +		/* NOJOB (STATUS0 bit 0) is set whenever no job holds the unit; mid-job
 +		 * it means the printer gave the page up and released us. UNINIT2 comes
 +		 * with it. */
@@ -242,7 +240,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  		}
  		usleep(CAPT_POLL_US);
  	}
-@@ -411,6 +452,11 @@
+@@ -411,6 +450,11 @@
  	uint8_t jbuf[2] = { LO(job), HI(job) };
  	const struct capt_status_s *status = NULL;
  
@@ -254,7 +252,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  	for (unsigned polls = 0; ; ++polls) {
  		status = lbp2900_get_status(state->ops);
  		if (status->page_completed == status->page_decoding) {
-@@ -466,13 +512,8 @@
+@@ -466,13 +510,8 @@
  	capt_sendrecv(CAPT_JOB_END, jbuf, 2, NULL, 0);
  }
  
@@ -269,7 +267,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  	while (1) {
  		const struct capt_status_s *status = lbp2900_get_status(state->ops);
  		if (FLAG(status, CAPT_FL_BUTTON_ON)) {
-@@ -484,6 +525,135 @@
+@@ -484,6 +523,142 @@
  		}
  		sleep(1);
  	}
@@ -347,33 +345,33 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
 +		exit(1);
 +	}
 +	lbp2900_wait_ready(state->ops);
-+
-+	/* Show it at the machine: the LED blinks until a page actually comes out. */
-+	if (! lbp2900_led_blinking) {
-+		capt_sendrecv(CAPT_GPIO, lbp2900_gpio_blink, ARRAY_SIZE(lbp2900_gpio_blink), NULL, 0);
-+		lbp2900_led_blinking = capt_last_result == 0;
-+	}
 +}
 +
 +static void lbp2900_recover_paper_out(struct printer_state_s *state)
 +{
 +	const struct capt_status_s *status;
 +
-+	fprintf(stderr, "INFO: CAPT: out of paper: load paper (the printer retries by itself)\n");
++	++lbp2900_drops;
 +	lbp2900_release_and_reacquire(state);
++	status = lbp2900_get_status(state->ops);
++	bool flags = FLAG(status, CAPT_FL_NOPAPER1) || FLAG(status, CAPT_FL_NOPAPER2)
++			|| FLAG(status, CAPT_FL_UNINIT1) || FLAG(status, CAPT_FL_UNINIT2);
 +
++	if (lbp2900_drops == 1 && ! flags) {
++		/* first drop: one automatic re-send, paper may already be there */
++		fprintf(stderr, "INFO: CAPT: out of paper: retrying the page once\n");
++		lbp2900_page_dropped = false;
++		return;
++	}
++
++	/* Dropped again (or the flags survived the reset): light the button and
++	 * wait for the user. The button only shows in the status while the LED
++	 * blinks, and GPIO needs the unit reserved, so this comes after the
++	 * re-acquire. */
 +	while (1) {
-+		status = lbp2900_get_status(state->ops);
-+		if (! FLAG(status, CAPT_FL_NOPAPER1) && ! FLAG(status, CAPT_FL_NOPAPER2)
-+				&& ! FLAG(status, CAPT_FL_UNINIT1) && ! FLAG(status, CAPT_FL_UNINIT2))
-+			break;
-+
-+		/* The flags survived the reset: this firmware wants the button. */
 +		fprintf(stderr, "INFO: CAPT: load paper and press the printer button\n");
-+		if (! lbp2900_led_blinking) {
-+			capt_sendrecv(CAPT_GPIO, lbp2900_gpio_blink, ARRAY_SIZE(lbp2900_gpio_blink), NULL, 0);
-+			lbp2900_led_blinking = true;
-+		}
++		capt_sendrecv(CAPT_GPIO, lbp2900_gpio_blink, ARRAY_SIZE(lbp2900_gpio_blink), NULL, 0);
++		lbp2900_led_blinking = true;
 +		lbp2900_wait_ready(state->ops);
 +		capt_sendrecv(CAPT_LBP3000_SETUP_0, lbp2900_offline, ARRAY_SIZE(lbp2900_offline), NULL, 0); /* GoOffline */
 +
@@ -382,8 +380,15 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
 +		capt_sendrecv(CAPT_GPIO, lbp2900_gpio_init, ARRAY_SIZE(lbp2900_gpio_init), NULL, 0);
 +		lbp2900_led_blinking = false;
 +		lbp2900_wait_ready(state->ops);
++		/* the printer may have let the job go while we waited; re-acquire and
++		 * re-initialise before touching it again */
 +		fprintf(stderr, "DEBUG: CAPT: paper-out recovery: re-initialising after the button\n");
 +		lbp2900_release_and_reacquire(state);
++
++		status = lbp2900_get_status(state->ops);
++		if (! FLAG(status, CAPT_FL_NOPAPER1) && ! FLAG(status, CAPT_FL_NOPAPER2)
++				&& ! FLAG(status, CAPT_FL_UNINIT1) && ! FLAG(status, CAPT_FL_UNINIT2))
++			break;
 +	}
 +
 +	/* media-empty stays on until page_epilogue sees the page come out */
@@ -407,7 +412,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  	lbp2900_wait_ready(state->ops);
 diff -ruN captdriver/src/rastertocapt.c captdriver/src/rastertocapt.c
 --- captdriver/src/rastertocapt.c	2026-09-04 09:49:13
-+++ captdriver/src/rastertocapt.c	2026-09-04 10:34:26
++++ captdriver/src/rastertocapt.c	2026-09-04 10:43:39
 @@ -233,6 +233,7 @@
  static void do_print(int fd)
  {
