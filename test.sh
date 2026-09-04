@@ -56,6 +56,18 @@ python3 "$DIR/tools/capt-fake-printer.py" --filter "$FILTER" --raster "$OUT/thre
 grep -E 'RESULT|milestones' "$OUT/fake-printer-paper-out.log" | cut -c1-600
 grep -q 'RESULT: PASS' "$OUT/fake-printer-paper-out.log"
 
+echo "==> 2c   Same, printer variants seen on the real unit: silent drop (no NOPAPER flags), unit never released, both"
+for variant in "silent:--paper-out-silent" "never-release:--release-after-polls=-1" "silent-never:--paper-out-silent --release-after-polls=-1"; do
+    name=${variant%%:*}; opts=${variant#*:}
+    # shellcheck disable=SC2086
+    python3 "$DIR/tools/capt-fake-printer.py" --filter "$FILTER" --raster "$OUT/three-pages.ras" \
+        --paper-out-page 2 --paper-out-polls 8 $opts \
+        --log "$OUT/rastertocapt-paper-out-$name.log" --timeout 240 \
+        > "$OUT/fake-printer-paper-out-$name.log"
+    printf '    %-14s %s\n' "$name" "$(grep -E 'RESULT' "$OUT/fake-printer-paper-out-$name.log")"
+    grep -q 'RESULT: PASS' "$OUT/fake-printer-paper-out-$name.log"
+done
+
 echo "==> 3/4  Decode the CAPT stream and compare with the input raster"
 "$DIR/build/tools/captdefilter" "$OUT/test-page.capt" > "$OUT/test-page-decoded.pbm" 2> "$OUT/captdefilter.log"
 python3 "$DIR/tools/compare-raster.py" "$OUT/test-page.ras" "$OUT/test-page-decoded.pbm"

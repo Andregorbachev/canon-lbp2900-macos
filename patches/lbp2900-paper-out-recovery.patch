@@ -1,7 +1,16 @@
 diff -ruN captdriver/src/capt-command.c captdriver/src/capt-command.c
---- captdriver/src/capt-command.c	2026-09-04 08:38:37
-+++ captdriver/src/capt-command.c	2026-09-04 08:38:37
-@@ -174,6 +174,15 @@
+--- captdriver/src/capt-command.c	2026-09-04 09:49:13
++++ captdriver/src/capt-command.c	2026-09-04 09:59:02
+@@ -136,6 +136,8 @@
+ 	capt_iosize += size + 4;
+ }
+ 
++uint8_t capt_last_result = 0;
++
+ void capt_send(uint16_t cmd, const void *buf, size_t size)
+ {
+ 	capt_iosize = 0;
+@@ -174,6 +176,16 @@
  		fprintf(stderr, "DEBUG: CAPT: recv ");
  		capt_debug_buf("DEBUG", capt_iosize);
  	}
@@ -9,6 +18,7 @@ diff -ruN captdriver/src/capt-command.c captdriver/src/capt-command.c
 +	 * LBP2900 in an error state (e.g. after a paper-out) answers 0x87/0x88 and
 +	 * then ignores page data, so make the rejection visible in the log.
 +	 * Status-record and identification replies carry data there, skip them. */
++	capt_last_result = capt_iosize >= 6 ? capt_iobuf[4] : 0;
 +	if (capt_iosize >= 6 && capt_iobuf[4] != 0
 +			&& cmd != CAPT_CHKSTATUS && cmd != CAPT_CHKXSTATUS
 +			&& cmd != CAPT_CHKJOBSTAT && cmd != CAPT_IDENT && cmd != 0xA1A0)
@@ -17,19 +27,42 @@ diff -ruN captdriver/src/capt-command.c captdriver/src/capt-command.c
  	if (reply) {
  		size_t copysize = reply_size ? *reply_size : capt_iosize;
  		if (copysize > capt_iosize)
+diff -ruN captdriver/src/capt-command.h captdriver/src/capt-command.h
+--- captdriver/src/capt-command.h	2026-09-04 09:49:13
++++ captdriver/src/capt-command.h	2026-09-04 09:59:02
+@@ -60,6 +60,12 @@
+ 
+ const char *capt_identify(void);
+ 
++/* Result byte of the last acknowledgement read by capt_sendrecv(): 0x00 =
++ * accepted. Seen on an LBP2900: 0x87 ReserveUnit while the unit is still
++ * held, 0x88 command not allowed (no unit reserved / error state), 0x90 the
++ * ReserveUnit variant with byte 0 = 0x02 refused. */
++extern uint8_t capt_last_result;
++
+ void capt_send(uint16_t cmd, const void *data, size_t size);
+ void capt_sendrecv(uint16_t cmd, const void *buf, size_t size, void *reply, size_t *reply_size);
+ 
+diff -ruN captdriver/src/capt-status.h captdriver/src/capt-status.h
+--- captdriver/src/capt-status.h	2026-09-04 09:49:13
++++ captdriver/src/capt-status.h	2026-09-04 09:59:02
+@@ -42,6 +42,9 @@
+ 	CAPT_FL_BUSY         = _FL(0, 7),
+ 	CAPT_FL_UNINIT1      = _FL(0, 5),
+ 	CAPT_FL_UNINIT2      = _FL(0, 4),
++	/* STATUS0 bit 0: no job holds the unit (set at idle, after JOB_END, and
++	 * when the printer drops a page and releases the job on its own) */
++	CAPT_FL_NOJOB        = _FL(0, 0),
+ 	CAPT_FL_BUFFERFULL   = _FL(0, 2),
+ 	CAPT_FL_NOPAPER1     = _FL(0, 1),
+ 	CAPT_FL_PROCESSING   = _FL(0, 0),
 diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
---- captdriver/src/prn_lbp2900.c	2026-09-04 08:38:37
-+++ captdriver/src/prn_lbp2900.c	2026-09-04 08:38:37
-@@ -62,6 +62,18 @@
+--- captdriver/src/prn_lbp2900.c	2026-09-04 09:49:13
++++ captdriver/src/prn_lbp2900.c	2026-09-04 09:59:02
+@@ -62,6 +62,12 @@
  	0x00, 0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00
  };
  
-+/* JOB_BEGIN (ReserveUnit) variant the Canon Windows driver sends when it
-+ * re-acquires the printer after a paper-out (byte 0 = 0x02 instead of 0x00). */
-+static const uint8_t magicbuf_0_recover[] = {
-+	0x02, 0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00
-+};
-+
 +/* 0xE0A6 "GoOffline" payload: sent by the Canon driver right before it waits
 + * for the user to press the button after a paper-out. */
 +static const uint8_t lbp2900_offline[] = {
@@ -39,7 +72,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  static const uint8_t magicbuf_2[] = {
  	0xEE, 0xDB, 0xEA, 0xAD, 0x00, 0x00, 0x00, 0x00,
  	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-@@ -130,6 +142,22 @@
+@@ -130,6 +136,22 @@
  	capt_sendrecv(CAPT_JOB_SETUP, buf, sizeof(buf), NULL, 0);
  }
  
@@ -62,7 +95,7 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  static void lbp2900_job_prologue(struct printer_state_s *state)
  {
  	(void) state;
-@@ -313,14 +341,8 @@
+@@ -313,14 +335,8 @@
  
  	status = lbp2900_get_status(state->ops);
  	if (FLAG(status, CAPT_FL_UNINIT1) || FLAG(status, CAPT_FL_UNINIT2)) {
@@ -79,57 +112,103 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  	}
  
  	for (unsigned polls = 0; ; ++polls) {
-@@ -374,30 +396,36 @@
+@@ -347,23 +363,23 @@
+ 
+ static bool lbp2900_page_epilogue(struct printer_state_s *state, const struct page_dims_s *dims)
+ {
+-	(void) dims;
+ 	const struct capt_status_s *status;
++	(void) dims;
+ 
+ 	capt_send(CAPT_PRINT_DATA_END, NULL, 0);
+ 
+ 	/* waiting until the page is received (check first, then poll finely so
+ 	 * a ready printer isn't stalled a whole second before the next page) */
+ 	for (unsigned polls = 0; ; ++polls) {
+-	  status = lbp2900_get_status(state->ops);
+-	  if (status->page_received == status->page_decoding)
+-	    break;
+-	  if (polls >= CAPT_WAIT_POLLS_PAGE) {
+-	    fprintf(stderr, "WARNING: CAPT: page-received didn't settle ~%us; proceeding\n",
+-	            CAPT_WAIT_POLLS_PAGE / 10);
+-	    break;
+-	  }
+-	  usleep(CAPT_POLL_US);
++		status = lbp2900_get_status(state->ops);
++		if (status->page_received == status->page_decoding)
++			break;
++		if (polls >= CAPT_WAIT_POLLS_PAGE) {
++			fprintf(stderr, "WARNING: CAPT: page-received didn't settle ~%us; proceeding\n",
++					CAPT_WAIT_POLLS_PAGE / 10);
++			break;
++		}
++		usleep(CAPT_POLL_US);
+ 	}
+ 	send_job_start(2, status->page_decoding);
+ 	lbp2900_wait_ready(state->ops);
+@@ -374,33 +390,43 @@
  
  	send_job_start(6, status->page_decoding);
  
 -	bool blinking = false;
 -	for (unsigned polls = 0; ; ++polls) {
-+	/* Out of paper on a real LBP2900 (macOS, 2026-09-04): the printer drops the
-+	 * fired page, sets UNINIT2 and does NOT resume by itself when paper is
-+	 * loaded; NOPAPER1/2 stay set. Report it once, poll once a second while the
-+	 * engine is still moving, then return false: rastertocapt waits for the
-+	 * button and restarts the job, which re-initialises the printer
-+	 * (START/UPLOAD) and re-sends the page. Re-sending inside the old job,
-+	 * as upstream did, left the printer silent on USB until power-cycled. */
+-		const struct capt_status_s *status = lbp2900_get_status(state->ops);
+-		/* Interesting. Using page_printing here results in shifted print */
 +	bool no_paper = false;
 +	unsigned polls = 0;
 +	while (1) {
- 		const struct capt_status_s *status = lbp2900_get_status(state->ops);
- 		/* Interesting. Using page_printing here results in shifted print */
++		status = lbp2900_get_status(state->ops);
  		if (status->page_out == status->page_decoding) {
 -			/* Page ejected OK -> clear the out-of-paper reason. */
  			fprintf(stderr, "STATE: -media-empty\n");
  			return true;
  		}
- 		if (FLAG(status, CAPT_FL_NOPAPER2) || FLAG(status, CAPT_FL_NOPAPER1)) {
--			fprintf(stderr, "DEBUG: CAPT: no paper\n");
+-		if (FLAG(status, CAPT_FL_NOPAPER2) || FLAG(status, CAPT_FL_NOPAPER1)) {
++		bool nopaper = FLAG(status, CAPT_FL_NOPAPER2) || FLAG(status, CAPT_FL_NOPAPER1);
++		/* NOJOB (STATUS0 bit 0) is set whenever no job holds the unit; mid-job
++		 * it means the printer gave the page up and released us. UNINIT2 comes
++		 * with it. */
++		bool dropped = FLAG(status, CAPT_FL_NOJOB) || FLAG(status, CAPT_FL_UNINIT2)
++				|| FLAG(status, CAPT_FL_UNINIT1);
++		if (nopaper && ! no_paper) {
++			no_paper = true;
+ 			fprintf(stderr, "DEBUG: CAPT: no paper\n");
 -			/* Surface "Out of paper" in the macOS print queue window. */
--			fprintf(stderr, "STATE: +media-empty\n");
+ 			fprintf(stderr, "STATE: +media-empty\n");
 -			/* Blink the printer's LED so it's obvious at the machine. */
 -			if (! blinking) {
 -				capt_sendrecv(CAPT_GPIO, lbp2900_gpio_blink,
 -						ARRAY_SIZE(lbp2900_gpio_blink), NULL, 0);
 -				blinking = true;
-+			if (! no_paper) {
-+				no_paper = true;
-+				fprintf(stderr, "DEBUG: CAPT: no paper\n");
-+				fprintf(stderr, "STATE: +media-empty\n");
- 			}
+-			}
 -			if (FLAG(status, CAPT_FL_PRINTING) || FLAG(status, CAPT_FL_PROCESSING1))
-+			if (FLAG(status, CAPT_FL_PRINTING) || FLAG(status, CAPT_FL_PROCESSING1)) {
++		}
++		if (nopaper || dropped) {
++			if (FLAG(status, CAPT_FL_PRINTING)) {
++				/* still moving paper: let it finish or fail */
 +				sleep(1);
  				continue;
 +			}
++			if (! nopaper)
++				fprintf(stderr, "DEBUG: CAPT: printer dropped the page (unit released / not initialised)\n");
 +			lbp2900_page_dropped = true;
  			return false;
  		}
 -		if (polls >= CAPT_WAIT_POLLS_PAGE) {
+-			fprintf(stderr, "WARNING: CAPT: page-out didn't settle ~%us; continuing\n",
+-					CAPT_WAIT_POLLS_PAGE / 10);
+-			return true;
 +		if (++polls >= CAPT_WAIT_POLLS_PAGE) {
- 			fprintf(stderr, "WARNING: CAPT: page-out didn't settle ~%us; continuing\n",
- 					CAPT_WAIT_POLLS_PAGE / 10);
- 			return true;
-@@ -466,13 +494,8 @@
++			if (FLAG(status, CAPT_FL_PRINTING) && polls < 10 * CAPT_WAIT_POLLS_PAGE)
++				continue; /* slow feed (warm-up), keep waiting up to ~200 s */
++			fprintf(stderr, "WARNING: CAPT: page %u never came out (~%us, no paper movement); treating it as dropped\n",
++					status->page_decoding, polls / 10);
++			lbp2900_page_dropped = true;
++			return false;
+ 		}
+ 		usleep(CAPT_POLL_US);
+ 	}
+@@ -466,13 +492,8 @@
  	capt_sendrecv(CAPT_JOB_END, jbuf, 2, NULL, 0);
  }
  
@@ -144,65 +223,101 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  	while (1) {
  		const struct capt_status_s *status = lbp2900_get_status(state->ops);
  		if (FLAG(status, CAPT_FL_BUTTON_ON)) {
-@@ -484,6 +507,76 @@
+@@ -484,6 +505,112 @@
  		}
  		sleep(1);
  	}
 +}
 +
-+/* Paper-out recovery, modelled on a USB capture of the Canon Windows driver
-+ * on an LBP2900 (HighwayStar, linux.org.ru, 2013). The printer drops the fired
-+ * page, latches NOPAPER/UNINIT and answers every further command with an
-+ * error code (0x87 to ReserveUnit, 0x88 to the rest) until the job is
-+ * released and the engine re-initialised; pushing page data into it in that
-+ * state stalls the USB link. Windows does:
-+ *   JOB_SETUP fg=6 (already sent by page_epilogue) -> JOB_END (ReleaseUnit)
-+ *   -> poll -> JOB_BEGIN with byte 0 = 0x02 (ReserveUnit) -> JOB_SETUP fg=2
-+ *   -> START_1/2/3 + UPLOAD_2 -> GPIO blink -> GoOffline -> wait for button
-+ *   -> GPIO init -> JOB_SETUP -> START_1/2/3 + UPLOAD_2 -> re-send the page.
-+ * The caller keeps the job open and re-sends the same page afterwards. */
-+static void lbp2900_recover_paper_out(struct printer_state_s *state)
++/* Paper-out recovery. Worked out on a real LBP2900 with tools/capt-probe.py
++ * (04.09.2026) and the Canon Windows driver capture (HighwayStar, 2013):
++ *  - the printer drops the fired page, sets UNINIT2 (and NOPAPER if its sensor
++ *    saw the empty tray) and sooner or later releases the unit on its own
++ *    (STATUS0 bit 0); from then on every command but status polls answers
++ *    0x88, and page data pushed in that state hangs the printer until a
++ *    power cycle (USB resets don't help);
++ *  - ReserveUnit answers 0x87 while the unit is still held, 0x90 for the
++ *    byte-0 = 0x02 variant Windows uses, 0x00 for the plain variant;
++ *  - plain ReserveUnit -> JOB_SETUP -> START_1/2/3 -> UPLOAD_2 brings it back
++ *    (UNINIT clears, page counters restart from 0) and the page prints;
++ *  - the button is only reported while the LED blinks.
++ * Never send page data unless every step here was accepted and the flags are
++ * clear; when the printer can't be re-acquired, fail the job instead. */
++static void lbp2900_release_and_reacquire(struct printer_state_s *state)
 +{
-+	uint8_t jbuf[2] = { LO(job), HI(job) };
++	const struct capt_status_s *status = lbp2900_get_status(state->ops);
 +	uint8_t buf[8];
-+	size_t size = sizeof(buf);
-+	const struct capt_status_s *status;
++	size_t size;
 +
-+	fprintf(stderr, "INFO: CAPT: load paper and press the printer button\n");
-+	fprintf(stderr, "DEBUG: CAPT: paper-out recovery: releasing job %u\n", job);
-+	capt_sendrecv(CAPT_JOB_END, jbuf, 2, NULL, 0);
-+
-+	/* let the engine settle; the Canon driver polls for several seconds here */
-+	sleep(1);
-+	for (unsigned polls = 0; polls < CAPT_WAIT_POLLS_PAGE; ++polls) {
-+		status = lbp2900_get_status(state->ops);
-+		if (! FLAG(status, CAPT_FL_PROCESSING1) && ! FLAG(status, CAPT_FL_PRINTING))
-+			break;
-+		usleep(CAPT_POLL_US);
++	if (! FLAG(status, CAPT_FL_NOJOB)) {
++		uint8_t jbuf[2] = { LO(job), HI(job) };
++		fprintf(stderr, "DEBUG: CAPT: paper-out recovery: releasing job %u\n", job);
++		capt_sendrecv(CAPT_JOB_END, jbuf, 2, NULL, 0);
++		sleep(1);
 +	}
 +
-+	fprintf(stderr, "DEBUG: CAPT: paper-out recovery: re-acquiring the printer\n");
-+	capt_sendrecv(CAPT_JOB_BEGIN, magicbuf_0_recover, ARRAY_SIZE(magicbuf_0_recover), buf, &size);
-+	if (size >= 4)
-+		job = WORD(buf[2], buf[3]);
++	for (unsigned tries = 0; ; ++tries) {
++		size = sizeof(buf);
++		fprintf(stderr, "DEBUG: CAPT: paper-out recovery: re-acquiring the printer\n");
++		capt_sendrecv(CAPT_JOB_BEGIN, magicbuf_0, ARRAY_SIZE(magicbuf_0), buf, &size);
++		if (capt_last_result == 0) {
++			job = WORD(buf[2], buf[3]);
++			break;
++		}
++		if (tries >= 10) {
++			fprintf(stderr, "ERROR: CAPT: printer refuses to restart the job (result 0x%02X); switch it off and on\n",
++					capt_last_result);
++			exit(1);
++		}
++		if (capt_last_result == 0x87) {
++			/* still held (by us): release and retry */
++			uint8_t jbuf[2] = { LO(job), HI(job) };
++			capt_sendrecv(CAPT_JOB_END, jbuf, 2, NULL, 0);
++		}
++		sleep(1);
++	}
++
 +	send_job_start(2, 0);
-+	lbp2900_reset(state);
-+
-+	capt_sendrecv(CAPT_GPIO, lbp2900_gpio_blink, ARRAY_SIZE(lbp2900_gpio_blink), NULL, 0);
++	capt_sendrecv(CAPT_START_1, NULL, 0, NULL, 0);
++	capt_sendrecv(CAPT_START_2, NULL, 0, NULL, 0);
++	capt_sendrecv(CAPT_START_3, NULL, 0, NULL, 0);
 +	lbp2900_wait_ready(state->ops);
-+	capt_sendrecv(CAPT_LBP3000_SETUP_0, lbp2900_offline, ARRAY_SIZE(lbp2900_offline), NULL, 0); /* GoOffline */
-+
-+	lbp2900_wait_button(state);
-+
-+	capt_sendrecv(CAPT_GPIO, lbp2900_gpio_init, ARRAY_SIZE(lbp2900_gpio_init), NULL, 0);
++	capt_sendrecv(CAPT_UPLOAD_2, magicbuf_2, ARRAY_SIZE(magicbuf_2), NULL, 0);
++	if (capt_last_result != 0) {
++		fprintf(stderr, "ERROR: CAPT: printer refuses re-initialisation (result 0x%02X); switch it off and on\n",
++				capt_last_result);
++		exit(1);
++	}
 +	lbp2900_wait_ready(state->ops);
-+	send_job_start(2, 0);
-+	fprintf(stderr, "DEBUG: CAPT: paper-out recovery: re-initialising the engine\n");
-+	lbp2900_reset(state);
++}
 +
-+	status = lbp2900_get_status(state->ops);
-+	if (FLAG(status, CAPT_FL_NOPAPER1) || FLAG(status, CAPT_FL_NOPAPER2))
-+		fprintf(stderr, "WARNING: CAPT: printer still reports no paper after recovery\n");
++static void lbp2900_recover_paper_out(struct printer_state_s *state)
++{
++	const struct capt_status_s *status;
++
++	lbp2900_release_and_reacquire(state);
++
++	while (1) {
++		status = lbp2900_get_status(state->ops);
++		if (! FLAG(status, CAPT_FL_NOPAPER1) && ! FLAG(status, CAPT_FL_NOPAPER2)
++				&& ! FLAG(status, CAPT_FL_UNINIT1) && ! FLAG(status, CAPT_FL_UNINIT2))
++			break;
++
++		fprintf(stderr, "INFO: CAPT: load paper and press the printer button\n");
++		fprintf(stderr, "STATE: +media-empty\n");
++		capt_sendrecv(CAPT_GPIO, lbp2900_gpio_blink, ARRAY_SIZE(lbp2900_gpio_blink), NULL, 0);
++		lbp2900_wait_ready(state->ops);
++		capt_sendrecv(CAPT_LBP3000_SETUP_0, lbp2900_offline, ARRAY_SIZE(lbp2900_offline), NULL, 0); /* GoOffline */
++
++		lbp2900_wait_button(state);
++
++		capt_sendrecv(CAPT_GPIO, lbp2900_gpio_init, ARRAY_SIZE(lbp2900_gpio_init), NULL, 0);
++		lbp2900_wait_ready(state->ops);
++		fprintf(stderr, "DEBUG: CAPT: paper-out recovery: re-initialising after the button\n");
++		lbp2900_release_and_reacquire(state);
++	}
++
++	fprintf(stderr, "STATE: -media-empty\n");
 +	lbp2900_page_dropped = false;
 +}
 +
@@ -222,8 +337,8 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  	capt_sendrecv(CAPT_GPIO, lbp2900_gpio_init, ARRAY_SIZE(lbp2900_gpio_init), NULL, 0);
  	lbp2900_wait_ready(state->ops);
 diff -ruN captdriver/src/rastertocapt.c captdriver/src/rastertocapt.c
---- captdriver/src/rastertocapt.c	2026-09-04 08:38:37
-+++ captdriver/src/rastertocapt.c	2026-09-04 08:38:37
+--- captdriver/src/rastertocapt.c	2026-09-04 09:49:13
++++ captdriver/src/rastertocapt.c	2026-09-04 09:59:02
 @@ -311,7 +311,12 @@
  			bool ok = ops->page_epilogue(state, &cached_page->dims);
  			if (! ok) {

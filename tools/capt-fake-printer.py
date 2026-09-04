@@ -78,10 +78,14 @@ class Printer:
         self.no_paper_polls = 0     # status polls since the tray ran empty
         self.no_paper_pending_page = 0
         self.button_pressed = False # sticky until the driver sends GPIO init (LED off)
+        self.led_blink = False      # the button is only reported while the LED blinks (real unit)
         self.reserved = False       # unit reserved by JOB_BEGIN, released by JOB_END
-        self.rejecting = False      # answering 0x88 to everything (after JOB_BEGIN on a reserved unit)
+        self.rejecting = False      # kept for --fake-reject in capt-probe: answer 0x88 to everything
         self.hung = False           # stopped answering (page data pushed into an error state)
         self.dropped_unrecovered = False
+        self.paper_out_silent = False   # drop the page without NOPAPER flags (seen on the real unit, run 3)
+        self.release_after_polls = 3    # the printer releases the unit this many polls after dropping a page (-1 = never)
+        self.drop_polls = -1            # polls since the page was dropped (-1 = no drop pending)
 
     def mark(self, m):
         self.milestones.append(m)
@@ -97,8 +101,13 @@ class Printer:
         self.poll += 1
         if self.poll % 2 == 0:
             v |= 1 << 8          # XSTATUS changed: makes the driver fetch 0xA0A8 too
-        if self.page_decoding and self.page_out < self.page_decoding:
-            v |= 1 << 0          # processing job
+        if self.drop_polls >= 0:
+            self.drop_polls += 1
+            if self.release_after_polls >= 0 and self.drop_polls > self.release_after_polls and self.reserved:
+                self.reserved = False
+                self.mark('printer released the unit on its own after the dropped page')
+        if not self.reserved:
+            v |= 1 << 0          # STATUS0 bit 0: no job holds the unit
         if self.no_paper:
             v |= 1 << 1                # NOPAPER1 (latched, see UPLOAD_2)
         return v
@@ -109,15 +118,19 @@ class Printer:
         b[2:8] = bytes([0x00, 0x00, 0x0F, 0x00, 0x00, 0x00])
         status1 = (1 << 2) if self.page_printing > self.page_out else 0
         status2 = 0
-        if self.tray_empty or self.no_paper or self.button_pressed:
+        if self.tray_empty or self.no_paper or self.button_pressed or self.drop_polls >= 0:
             self.no_paper_polls += 1
         if self.no_paper:
             status1 = (1 << 14) | ((1 << 2) if self.no_paper_polls <= 2 else 0)
-        if self.tray_empty and self.no_paper_polls > self.paper_out_polls:
-            # a real LBP2900 does not resume by itself: after K polls the user loads paper and presses the button
-            self.tray_empty = False
-            self.button_pressed = True
-            self.mark('user loaded paper and pressed the button')
+        if self.no_paper_polls > self.paper_out_polls:
+            # a real LBP2900 does not resume by itself: after K polls the user loads paper, and presses the
+            # button whenever the LED blinks (the button is not reported otherwise)
+            if self.tray_empty:
+                self.tray_empty = False
+                self.mark('user loaded paper')
+            if self.led_blink and not self.button_pressed:
+                self.button_pressed = True
+                self.mark('user pressed the blinking button')
         if self.button_pressed:
             status1 |= 1 << 5            # STATUS1 bit 5: button pressed
             status2 = 1 << 7             # STATUS2 bit 7: seen together with it on a real unit
@@ -153,6 +166,11 @@ class Printer:
         if self.rejecting and cmd not in (0xE0A0, 0xA0A8, 0xA0A1, 0xA1A0, 0xA1A1, 0xC0A0, 0xC0A4, 0xD0A9):
             self.log(f'  {name}: rejected with 0x88')
             return b'\x88\x00'
+        if not self.reserved and cmd not in (0xE0A0, 0xA0A8, 0xA0A1, 0xA1A0, 0xA1A1, 0xA3A2, 0xA2A0,
+                                             0xC0A0, 0xC0A4, 0xD0A9):
+            # real unit: with no job holding it, everything but status/ident/START_0/ReserveUnit answers 0x88
+            self.log(f'  {name}: no unit reserved -> 0x88')
+            return b'\x88\x00'
         if cmd == 0xC0A0:
             if not self.pages:
                 self.errors.append('PRINT_DATA before SET_PARMS')
@@ -172,13 +190,18 @@ class Printer:
         if cmd == 0xA3A2:
             return b'\x00\x00'
         if cmd == 0xA2A0:
+            if payload and payload[0] == 0x02:
+                # the byte-0 = 0x02 variant of the Canon Windows driver is refused by this firmware
+                self.mark('JOB_BEGIN byte0=0x02 -> 0x90')
+                return struct.pack('<HHI', 0x90, 0, 0)
             if self.reserved:
-                # observed on a real LBP2900 (job 73): ReserveUnit while the unit is still held -> 0x87,
-                # every following command -> 0x88, page data -> no reply at all
-                self.rejecting = True
-                self.mark('JOB_BEGIN on a reserved unit -> 0x87')
+                # real LBP2900 (job 73): ReserveUnit while the unit is still held -> 0x87, and the
+                # printer then drops the old job (bit 0 set); everything else answers 0x88 until re-reserved
+                self.reserved = False
+                self.mark('JOB_BEGIN on a reserved unit -> 0x87, unit released')
                 return struct.pack('<HHI', 0x87, 0, 0)
             self.reserved = True
+            self.drop_polls = -1
             self.job += 1
             self.mark(f'JOB_BEGIN byte0=0x{payload[0]:02X} job=0x{self.job:04X}' if payload else 'JOB_BEGIN')
             return struct.pack('<HHI', 0, self.job, 0)     # job number at bytes 2-3
@@ -187,7 +210,9 @@ class Printer:
                 if self.button_pressed:
                     self.mark('GPIO init: LED off, button acknowledged')
                 self.button_pressed = False
-            elif self.tray_empty or self.no_paper:
+                self.led_blink = False
+            elif payload[:4] == bytes([0, 0, 1, 2]):
+                self.led_blink = True
                 self.mark('GPIO blink: LED blinking')
             return b'\x00\x00'
         if cmd == 0xE1A1:
@@ -254,12 +279,15 @@ class Printer:
                 self.mark(f'FIRE page {page} ignored (not ready)')
             elif self.paper_out_page and self.pages and len(self.pages) == self.paper_out_page and self.page_out < page:
                 self.tray_empty = True
-                self.no_paper = True          # latched until UPLOAD_2
-                self.uninit = True            # UNINIT2 is set while out of paper and stays until UPLOAD_2
+                self.page_printing = self.page_out          # real unit: the printing counter does not advance for a dropped page
+                self.no_paper = not self.paper_out_silent   # latched until UPLOAD_2
+                self.uninit = True            # UNINIT2 is set after the drop and stays until UPLOAD_2
                 self.no_paper_polls = 0
+                self.drop_polls = 0
                 self.no_paper_pending_page = page
                 self.dropped_unrecovered = True
-                self.mark(f'FIRE page {page} -> tray empty, page dropped')
+                self.mark(f'FIRE page {page} -> tray empty, page dropped' +
+                          (' silently (no NOPAPER flags)' if self.paper_out_silent else ''))
             else:
                 self.page_out = self.page_decoding
                 self.page_completed = self.page_decoding
@@ -275,6 +303,7 @@ class Printer:
             if job != self.job:
                 self.errors.append(f'JOB_END for job 0x{job:04X}, current is 0x{self.job:04X}')
             self.reserved = False
+            self.drop_polls = -1
             self.mark(f'JOB_END job=0x{job:04X}')
             return b'\x00\x00'
         if cmd == 0xE0A6:
@@ -342,6 +371,8 @@ def main():
     ap.add_argument('--timeout', type=float, default=180.0)
     ap.add_argument('--paper-out-page', type=int, default=0, help='emulate an empty tray when this page (1-based, per job) is fired')
     ap.add_argument('--paper-out-polls', type=int, default=8, help='status polls to stay out of paper before "paper loaded"')
+    ap.add_argument('--paper-out-silent', action='store_true', help='drop the page without NOPAPER flags (real unit, probe run 3)')
+    ap.add_argument('--release-after-polls', type=int, default=3, help='printer releases the unit this many polls after the drop; -1 = never (job 73)')
     args = ap.parse_args()
 
     def log(msg):
@@ -350,6 +381,8 @@ def main():
     printer = Printer(log)
     printer.paper_out_page = args.paper_out_page
     printer.paper_out_polls = args.paper_out_polls
+    printer.paper_out_silent = args.paper_out_silent
+    printer.release_after_polls = args.release_after_polls
 
     back_r, back_w = os.pipe()                 # printer -> filter (fd 3)
     side_filter, side_printer = socket.socketpair()   # fd 4
