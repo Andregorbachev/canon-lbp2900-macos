@@ -84,7 +84,7 @@ class Printer:
         self.hung = False           # stopped answering (page data pushed into an error state)
         self.dropped_unrecovered = False
         self.buffer_bytes = 0           # page data held in the printer; drains as it prints/decodes
-        self.buffer_capacity = 1 << 20  # STATUS0 bit 2 (BUFFERFULL) above this; data beyond it is lost
+        self.buffer_capacity = 512 << 10  # STATUS0 bit 2 (BUFFERFULL) above half of this; data beyond it is lost
         self.overflowed = False
         self.paper_out_silent = False   # drop the page without NOPAPER flags (seen on the real unit, run 3)
         self.release_after_polls = 3    # the printer releases the unit this many polls after dropping a page (-1 = never)

@@ -33,14 +33,15 @@ stream decoded back to the original page byte for byte.
 |---|---|
 | `vendor/captdriver/` | captdriver sources, a copy of the commit named in `UPSTREAM.txt`. Do not edit. |
 | `patches/lbp2900-macos.patch` | First patch on top of vendor: the LBP2900 status strategy, 100 ms polling, bounded waits, `PAGE:`/`STATE:` lines for the macOS queue (from [duy12i1i7/canon-LBP2900-for-macOS](https://github.com/duy12i1i7/canon-LBP2900-for-macOS), GPL-3.0), plus removal of `#define _POSIX_C_SOURCE` from `std.h`, without which the fork does not build on macOS. |
-| `patches/lbp2900-paper-out-recovery.patch` | Second patch: detect a dropped page (no-paper flags, or the printer releasing the job by itself), release and re-acquire the printer, re-initialise it, re-send the page once, then blink the LED and wait for the button before every further attempt. Checks the printer's result codes and never sends page data while the printer is in an error state. Also logs a warning whenever the printer rejects a command. See "Known limitations". |
+| `patches/lbp2900-paper-out-recovery.patch` | Second patch. Halftoning: the PPD asks for 8-bit grey and the filter dithers it (8x8 Bayer) with a page-size budget for the printer's 2 MB. Paper-out: detect a dropped page (no-paper flags, or the printer releasing the job by itself), release and re-acquire the printer, re-initialise it, re-send the page once, then blink the LED and wait for the button before every further attempt. Checks the printer's result codes and never sends page data while the printer is in an error state. Also logs a warning whenever the printer rejects a command. See "Known limitations". |
 | `build.sh` | Build: copies vendor into `build/`, applies the patches from `patches/` in name order, compiles the filter and the test tools, compiles the PPD from `canon-lbp.drv` with `ppdc` and writes the absolute filter path into it. |
 | `test.sh` | Verification without a printer, see below. Results in `build/test/`. |
 | `install.sh`, `uninstall.sh` | Install and remove (need `sudo`). |
 | `package.sh` | Builds `dist/canon-lbp2900-macos-<version>-universal.tar.gz` for installing on another Mac without Xcode. |
 | `ppd/Canon-LBP2900-captdriver.ppd` | Generated PPD. Recreated by `build.sh`. |
 | `tools/capt-fake-printer.py` | Printer emulator: stands in for the three CUPS backend channels (stdout, fd 3, fd 4) and answers CAPT commands per `SPECS` and `prn_lbp2900.c`, including the out-of-paper behaviour observed on the real unit. |
-| `tools/compare-raster.py`, `tools/pbm-to-png.py`, `tools/make-photo-page.py` | Compare the decoded page with the source raster; render a PNG; generate the photo-like test page. |
+| `tools/compare-raster.py`, `tools/pbm-to-png.py`, `tools/make-photo-page.py` | Compare the decoded page with the source raster (halftoning 8-bit pages the way the filter does); render a PNG; generate the photo-like test page. |
+| `tools/hiscoa-size.c`, `tools/halftone-size.c` | Measure the Hi-SCoA size of a 1-bit page, and of an 8-bit page under different dither matrices (built into `build/tools/`). |
 | `tools/capt-probe.py` | Direct USB probe over libusb/pyusb (`.venv`, `brew install libusb`, run with `sudo`): printer status, USB resets, and a step-by-step out-of-paper experiment that logs every printer reply. Needed because through CUPS each attempt costs a printer power cycle. |
 | `docs/research-notes.md` | What was checked and found: Canon's driver line-up, captdriver ports, the CAPT status record, the out-of-paper state machine. |
 | `build/` | Everything generated. Deleted and recreated by `build.sh`. |
@@ -168,13 +169,20 @@ arm64 build byte for byte, only the timestamps in the JOB_SETUP commands differ.
   job without releasing the old one / with byte `02`: `87`/`90`. The emulator reproduces
   every variant; `./test.sh` runs six scenarios. Confirmed through CUPS on the real
   printer on 2026-09-04.
-- Photos and other dense pages (fixed in 0.2.2, awaiting confirmation on a real printer).
-  A halftoned photo does not compress: a page is several MB of Hi-SCoA data instead of
-  ~25 KB for text. Upstream captdriver streams the whole page without looking at the
-  printer's BUFFERFULL flag (STATUS0 bit 2, "do not send data"); the LBP2900's buffer
-  overflows and the page prints as a collage of misplaced strips, then gets dropped.
-  The second patch now checks the flag every 32 KB of page data and waits while it is
-  set. `./test.sh` runs a ~4 MB synthetic photo page against an emulated 1 MB buffer.
+- Photos and other dense pages (0.2.3, awaiting confirmation on a real printer). The
+  LBP2900 has 2 MB of memory, not expandable, and a page has to fit into it as Hi-SCoA
+  data. Hi-SCoA was designed for the regular screens of Canon's own driver; Apple's
+  `cgpdftoraster` halftones with error diffusion, which does not compress at all: a
+  screenshot page came out at 3.7 MB, printed as a collage of misplaced strips, was
+  dropped by the printer and then hung it. Since 0.2.3 the PPD asks for 8-bit grey and
+  the filter halftones the page itself with an 8x8 ordered dither (64 levels): the same
+  page is about 0.7 MB. If a page still exceeds 1.25 MB it is halftoned again from 2x2,
+  4x4 and 8x8 pixel averages until it fits; a page that would still exceed 1.5 MB is
+  refused with an error instead of hanging the printer. Text is unaffected: thresholding
+  8-bit grey gives the same bits as before (`./test.sh` compares them). The filter also
+  paces page data by the printer's BUFFERFULL flag (STATUS0 bit 2). Tools:
+  `build/tools/hiscoa-size page.pbm` and `build/tools/halftone-size image.pgm MATRIX`
+  measure how much data a page becomes with different halftones.
 - The paper-size code in the printer command is always A4: upstream takes the size name
   from the raster's `MediaType` field instead of `cupsPageSizeName`. The image size is
   right, so for A4 it makes no difference; Letter may show artefacts.

@@ -1,6 +1,18 @@
+diff -ruN captdriver/src/canon-lbp.drv captdriver/src/canon-lbp.drv
+--- captdriver/src/canon-lbp.drv	2026-09-04 09:49:13
++++ captdriver/src/canon-lbp.drv	2026-09-04 13:44:23
+@@ -30,7 +30,7 @@
+ 	Choice True/Enabled	"<</cupsInteger2 1>>setpagedevice"
+ 
+ 	{
+-                *Resolution k 1 70 592 0 "600dpi/600 DPI"
++                *Resolution k 8 70 592 0 "600dpi/600 DPI"   // 8-bit grey: rastertocapt halftones it itself
+ 
+ 		/* LBP 2900/3000, with multi-page size and type support */
+ 		MediaType 0 "Plain/Plain Paper"
 diff -ruN captdriver/src/capt-command.c captdriver/src/capt-command.c
 --- captdriver/src/capt-command.c	2026-09-04 09:49:13
-+++ captdriver/src/capt-command.c	2026-09-04 12:41:29
++++ captdriver/src/capt-command.c	2026-09-04 13:44:23
 @@ -22,6 +22,7 @@
  #include "std.h"
  #include "word.h"
@@ -38,7 +50,7 @@ diff -ruN captdriver/src/capt-command.c captdriver/src/capt-command.c
  		if (copysize > capt_iosize)
 diff -ruN captdriver/src/capt-command.h captdriver/src/capt-command.h
 --- captdriver/src/capt-command.h	2026-09-04 09:49:13
-+++ captdriver/src/capt-command.h	2026-09-04 12:41:29
++++ captdriver/src/capt-command.h	2026-09-04 13:44:23
 @@ -19,6 +19,7 @@
  
  #pragma once
@@ -64,7 +76,7 @@ diff -ruN captdriver/src/capt-command.h captdriver/src/capt-command.h
  void capt_sendrecv(uint16_t cmd, const void *buf, size_t size, void *reply, size_t *reply_size);
 diff -ruN captdriver/src/capt-status.h captdriver/src/capt-status.h
 --- captdriver/src/capt-status.h	2026-09-04 09:49:13
-+++ captdriver/src/capt-status.h	2026-09-04 12:41:29
++++ captdriver/src/capt-status.h	2026-09-04 13:44:23
 @@ -42,6 +42,9 @@
  	CAPT_FL_BUSY         = _FL(0, 7),
  	CAPT_FL_UNINIT1      = _FL(0, 5),
@@ -77,7 +89,7 @@ diff -ruN captdriver/src/capt-status.h captdriver/src/capt-status.h
  	CAPT_FL_PROCESSING   = _FL(0, 0),
 diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
 --- captdriver/src/prn_lbp2900.c	2026-09-04 09:49:13
-+++ captdriver/src/prn_lbp2900.c	2026-09-04 12:41:29
++++ captdriver/src/prn_lbp2900.c	2026-09-04 13:44:23
 @@ -62,6 +62,12 @@
  	0x00, 0x00, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00
  };
@@ -482,8 +494,294 @@ diff -ruN captdriver/src/prn_lbp2900.c captdriver/src/prn_lbp2900.c
  	},
 diff -ruN captdriver/src/rastertocapt.c captdriver/src/rastertocapt.c
 --- captdriver/src/rastertocapt.c	2026-09-04 09:49:13
-+++ captdriver/src/rastertocapt.c	2026-09-04 12:41:29
-@@ -233,6 +233,7 @@
++++ captdriver/src/rastertocapt.c	2026-09-04 13:44:23
+@@ -24,6 +24,7 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ #include <signal.h>
++#include <stdbool.h>
+ #include <stdio.h>
+ #include <string.h>
+ 
+@@ -105,73 +106,106 @@
+ 	}
+ }
+ 
+-static void compress_page_data(struct printer_state_s *state,
+-		struct cached_page_s *page,
+-		cups_raster_t *raster,
+-		const struct cups_page_header2_s *header)
++/* Ordered dither, 8x8 Bayer, 64 levels. The LBP2900 has 2 MB of memory and
++ * no way to add more; Hi-SCoA was designed for the regular screens of Canon's
++ * own driver. Apple's cgpdftoraster halftones with error diffusion, which
++ * Hi-SCoA cannot compress (a photo page came out at 3.7 MB, printed as a
++ * collage of strips and hung the printer), so we ask it for 8-bit grey and
++ * halftone here with a regular matrix: the same page is 0.7 MB. */
++static const uint8_t bayer8[8][8] = {
++	{  0, 32,  8, 40,  2, 34, 10, 42 }, { 48, 16, 56, 24, 50, 18, 58, 26 },
++	{ 12, 44,  4, 36, 14, 46,  6, 38 }, { 60, 28, 52, 20, 62, 30, 54, 22 },
++	{  3, 35, 11, 43,  1, 33,  9, 41 }, { 51, 19, 59, 27, 49, 17, 57, 25 },
++	{ 15, 47,  7, 39, 13, 45,  5, 37 }, { 63, 31, 55, 23, 61, 29, 53, 21 },
++};
++
++/* Hi-SCoA bytes per page we allow ourselves out of the printer's 2 MB. Above
++ * PAGE_BUDGET the page is halftoned again at half detail (2x2 averaging);
++ * above PAGE_LIMIT it is refused: data that does not fit garbles the print
++ * and hangs the printer until a power cycle. */
++#define PAGE_BUDGET (1280u * 1024u)
++#define PAGE_LIMIT  (1536u * 1024u)
++
++/* 8-bit grey line y -> packed 1-bit line (1 = black). `black255` says whether
++ * 255 means black (CUPS_CSPACE_K) or white (CUPS_CSPACE_W/SW). `block` > 1
++ * averages block x block pixels first: the fallback for pages that would not
++ * fit into the printer's memory (noise does not compress; averaging removes it). */
++static void dither_line(uint8_t *packed, size_t packed_size,
++		const uint8_t *page, unsigned bpl, unsigned width, unsigned height, unsigned y,
++		bool black255, unsigned block)
+ {
++	const uint8_t *line = page + (size_t) y * bpl;
++	memset(packed, 0, packed_size);
++	for (unsigned x = 0; x < width; ++x) {
++		unsigned v;
++		if (block > 1) {
++			unsigned x0 = x - x % block, y0 = y - y % block, sum = 0, n = 0;
++			for (unsigned yy = y0; yy < y0 + block && yy < height; ++yy)
++				for (unsigned xx = x0; xx < x0 + block && xx < width; ++xx) {
++					sum += page[(size_t) yy * bpl + xx];
++					++n;
++				}
++			v = (sum + n / 2) / n;
++		} else {
++			v = line[x];
++		}
++		if (! black255)
++			v = 255 - v;
++		/* v = blackness 0..255; threshold from the 64-level matrix */
++		if (v > (unsigned) bayer8[y & 7][x & 7] * 4 + 1)
++			packed[x >> 3] |= 0x80 >> (x & 7);
++	}
++}
++
++static void free_page_bands(struct cached_page_s *page)
++{
++	while (page->bands) {
++		void *p = page->bands;
++		page->bands = page->bands->next;
++		free(p);
++	}
++}
++
++/* Compress the 1-bit lines delivered by get_line() into page->bands.
++ * Returns the total Hi-SCoA size. */
++static size_t compress_page_lines(struct printer_state_s *state,
++		struct cached_page_s *page, unsigned src_bytes_per_line, unsigned src_height,
++		const uint8_t *(*get_line)(void *ctx, unsigned y), void *ctx)
++{
+ 	const struct page_dims_s *dims = &page->dims;
+ 	const unsigned compsize = 2 * dims->line_size * dims->band_size;
+-
+ 	struct band_list_s *last_band = NULL;
+-	unsigned i;
+-	unsigned iband;
++	unsigned shiftb = 0, shiftl = 0;
++	unsigned csize = src_bytes_per_line;
++	size_t total = 0;
+ 
+-	unsigned shiftb = 0;
+-	unsigned shiftl = 0;
+-	unsigned csize = header->cupsBytesPerLine;
+-
+-
+-	if (header->cupsBytesPerLine < dims->line_size) {
+-		csize = header->cupsBytesPerLine;
+-		shiftb = center_pixels(header->cupsBytesPerLine, dims->line_size,
+-				header->cupsBitsPerPixel);
++	if (src_bytes_per_line < dims->line_size) {
++		csize = src_bytes_per_line;
++		shiftb = center_pixels(src_bytes_per_line, dims->line_size, 1);
+ 	}
+-
+-	if (dims->line_size < header->cupsBytesPerLine) {
++	if (dims->line_size < src_bytes_per_line) {
+ 		csize = dims->line_size;
+-		shiftl = center_pixels(dims->line_size, header->cupsBytesPerLine,
+-				header->cupsBitsPerPixel);
++		shiftl = center_pixels(dims->line_size, src_bytes_per_line, 1);
+ 	}
++	if (src_bytes_per_line > dims->line_size)
++		fprintf(stderr, "INFO: cutting line from %u to %u bytes\n", src_bytes_per_line, dims->line_size);
++	if (src_height > dims->num_lines)
++		fprintf(stderr, "INFO: cutting image from %u to %u lines\n", src_height, dims->num_lines);
+ 
+-	if (header->cupsBytesPerLine > dims->line_size)
+-		fprintf(stderr, "INFO: cutting line from %u to %u bytes\n",
+-				header->cupsBytesPerLine, dims->line_size);
+-
+-	if (header->cupsHeight > dims->num_lines)
+-		fprintf(stderr, "INFO: cutting image from %u to %u lines\n",
+-				header->cupsHeight, dims->num_lines);
+-
+-	linebuf = calloc(1, header->cupsBytesPerLine);
+-	if (! linebuf)
+-		abort();
+-	bandbuf = calloc(dims->line_size, dims->band_size);
+-	if (! bandbuf)
+-		abort();
+-	compbuf = calloc(1, compsize);
+-	if (! compbuf)
+-		abort();
+-
+-	for (iband = 0; iband * dims->band_size < dims->num_lines; ++iband) {
++	free_page_bands(page);
++	for (unsigned iband = 0; iband * dims->band_size < dims->num_lines; ++iband) {
+ 		struct band_list_s *new_band;
+ 		unsigned start = iband * dims->band_size;
+ 		unsigned nlines = dims->band_size;
+-		unsigned iline;
+ 		size_t size;
+ 		memset(bandbuf, 0, dims->line_size * dims->band_size);
+ 		if (nlines + start >= dims->num_lines)
+ 			nlines = dims->num_lines - start;
+-		for (iline = 0; iline < nlines; ++iline) {
+-			if (iline + start < header->cupsHeight) {
+-				if (cupsRasterReadPixels(raster, linebuf, header->cupsBytesPerLine)
+-								!= header->cupsBytesPerLine) {
+-					fprintf(stderr, "ERROR: CAPT: broken raster file\n");
+-					exit(1);
+-				}
+-			} else {
+-				memset(linebuf, 0, header->cupsBytesPerLine);
++		for (unsigned iline = 0; iline < nlines; ++iline) {
++			if (iline + start < src_height) {
++				const uint8_t *src = get_line(ctx, iline + start);
++				memcpy(bandbuf + iline * dims->line_size + shiftb, src + shiftl, csize);
+ 			}
+-			memcpy(bandbuf + iline * dims->line_size + shiftb, linebuf + shiftl, csize);
+ 		}
+ 		size = state->ops->compress_band(state, compbuf, compsize, bandbuf, dims->line_size, nlines);
+ 		new_band = calloc(1, sizeof_struct_band_list_s(size));
+@@ -185,12 +219,117 @@
+ 		if (last_band)
+ 			last_band->next = new_band;
+ 		last_band = new_band;
++		total += size;
+ 	}
++	return total;
++}
+ 
+-	/* discard end of image, if any */
+-	for (i = dims->num_lines; i < header->cupsHeight; ++i)
+-		cupsRasterReadPixels(raster, linebuf, header->cupsBytesPerLine);
++/* line providers for compress_page_lines() */
++struct raster_ctx_s {
++	cups_raster_t *raster;
++	const struct cups_page_header2_s *header;
++	uint8_t *page;          /* whole page, cupsBytesPerLine * cupsHeight (8-bit mode) */
++	uint8_t *packed;        /* one packed 1-bit line */
++	size_t packed_size;
++	bool black255;
++	unsigned block;         /* 1 = full detail, 2/4 = averaged blocks */
++	unsigned next_line;     /* streaming 1-bit mode */
++};
+ 
++static const uint8_t *raster_line_1bit(void *vctx, unsigned y)
++{
++	struct raster_ctx_s *ctx = vctx;
++	/* lines are requested in order; skip ahead if a band was cut */
++	while (ctx->next_line <= y) {
++		if (cupsRasterReadPixels(ctx->raster, linebuf, ctx->header->cupsBytesPerLine)
++						!= ctx->header->cupsBytesPerLine) {
++			fprintf(stderr, "ERROR: CAPT: broken raster file\n");
++			exit(1);
++		}
++		++ctx->next_line;
++	}
++	return linebuf;
++}
++
++static const uint8_t *raster_line_8bit(void *vctx, unsigned y)
++{
++	struct raster_ctx_s *ctx = vctx;
++	dither_line(ctx->packed, ctx->packed_size, ctx->page, ctx->header->cupsBytesPerLine,
++			ctx->header->cupsWidth, ctx->header->cupsHeight, y, ctx->black255, ctx->block);
++	return ctx->packed;
++}
++
++static void compress_page_data(struct printer_state_s *state,
++		struct cached_page_s *page,
++		cups_raster_t *raster,
++		const struct cups_page_header2_s *header)
++{
++	const struct page_dims_s *dims = &page->dims;
++	const unsigned compsize = 2 * dims->line_size * dims->band_size;
++	struct raster_ctx_s ctx = { .raster = raster, .header = header };
++	size_t total;
++
++	linebuf = calloc(1, header->cupsBytesPerLine);
++	if (! linebuf)
++		abort();
++	bandbuf = calloc(dims->line_size, dims->band_size);
++	if (! bandbuf)
++		abort();
++	compbuf = calloc(1, compsize);
++	if (! compbuf)
++		abort();
++
++	if (header->cupsBitsPerPixel == 1) {
++		/* already halftoned (old PPD or another rasteriser): send as is */
++		ctx.next_line = 0;
++		total = compress_page_lines(state, page, header->cupsBytesPerLine, header->cupsHeight,
++				raster_line_1bit, &ctx);
++		if (total > PAGE_LIMIT)
++			fprintf(stderr, "WARNING: CAPT: page is %zu bytes of Hi-SCoA data, more than the printer's memory; "
++					"it will probably print garbled (use the shipped PPD for 8-bit grey)\n", total);
++		/* discard end of image, if any */
++		for (unsigned i = ctx.next_line; i < header->cupsHeight; ++i)
++			cupsRasterReadPixels(raster, linebuf, header->cupsBytesPerLine);
++	} else if (header->cupsBitsPerPixel == 8 && header->cupsBitsPerColor == 8) {
++		const size_t page_bytes = (size_t) header->cupsBytesPerLine * header->cupsHeight;
++		ctx.page = malloc(page_bytes);
++		ctx.packed_size = (header->cupsWidth + 7) / 8;
++		ctx.packed = calloc(1, ctx.packed_size);
++		if (! ctx.page || ! ctx.packed)
++			abort();
++		for (unsigned y = 0; y < header->cupsHeight; ++y) {
++			if (cupsRasterReadPixels(raster, ctx.page + (size_t) y * header->cupsBytesPerLine,
++							header->cupsBytesPerLine) != header->cupsBytesPerLine) {
++				fprintf(stderr, "ERROR: CAPT: broken raster file\n");
++				exit(1);
++			}
++		}
++		/* CUPS_CSPACE_K (3) and CMY/CMYK-like spaces: 255 = full ink; W (0), SW (17), RGB...: 255 = white */
++		ctx.black255 = header->cupsColorSpace != 0 && header->cupsColorSpace != 17
++				&& header->cupsColorSpace != 1 && header->cupsColorSpace != 18 && header->cupsColorSpace != 19;
++		ctx.block = 1;
++		total = compress_page_lines(state, page, ctx.packed_size, header->cupsHeight, raster_line_8bit, &ctx);
++		fprintf(stderr, "DEBUG: CAPT: page halftoned (8x8 ordered dither): %zu bytes of Hi-SCoA data\n", total);
++		/* too much for the printer's memory: average 2x2, 4x4, then 8x8 pixel blocks */
++		for (unsigned block = 2; total > PAGE_BUDGET && block <= 8; block *= 2) {
++			ctx.block = block;
++			total = compress_page_lines(state, page, ctx.packed_size, header->cupsHeight, raster_line_8bit, &ctx);
++			fprintf(stderr, "INFO: CAPT: page too detailed for the printer's memory, halftoned at 1/%u detail: %zu bytes\n",
++					block, total);
++		}
++		if (total > PAGE_LIMIT) {
++			fprintf(stderr, "ERROR: CAPT: page needs %zu bytes, more than the printer can hold (%u); not printing it\n",
++					total, PAGE_LIMIT);
++			exit(1);
++		}
++		free(ctx.page);
++		free(ctx.packed);
++	} else {
++		fprintf(stderr, "ERROR: CAPT: unsupported raster format: %u bits per pixel, %u bits per colour "
++				"(expected 1-bit or 8-bit grey)\n", header->cupsBitsPerPixel, header->cupsBitsPerColor);
++		exit(1);
++	}
++
+ 	free_buffers();
+ }
+ 
+@@ -233,6 +372,7 @@
  static void do_print(int fd)
  {
  	bool in_job = false;
@@ -491,7 +789,7 @@ diff -ruN captdriver/src/rastertocapt.c captdriver/src/rastertocapt.c
  	ops = printer_detect();
  
  	if (ops->alloc_state)
-@@ -303,7 +304,8 @@
+@@ -303,7 +443,8 @@
  		 * path (Word/Excel etc.) PrintCore writes its own "N of M" text into the
  		 * same job-printer-state-message, so a second writer just produces a
  		 * jumbled, flickering status line. */
@@ -501,7 +799,7 @@ diff -ruN captdriver/src/rastertocapt.c captdriver/src/rastertocapt.c
  		send_page_data(state, cached_page);
  
  		fprintf(stderr, "DEBUG: CAPT: rastertocapt: end page %u\n", state->ipage);
-@@ -311,12 +313,19 @@
+@@ -311,12 +452,19 @@
  			bool ok = ops->page_epilogue(state, &cached_page->dims);
  			if (! ok) {
  				fprintf(stderr, "DEBUG: CAPT: rastertocapt: page not printed\n");

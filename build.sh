@@ -8,7 +8,7 @@
 # Outputs: build/rastertocapt              CUPS filter, arm64/x86_64 (whatever this Mac is)
 #          build/tools/captdefilter        decodes a CAPT stream back to a PBM image (from upstream tests/)
 #          build/tools/test-hiscoa         Hi-SCoA compress/decompress round-trip test
-#          ppd/Canon-LBP2900-captdriver.ppd  PPD compiled from vendor/captdriver/src/canon-lbp.drv with ppdc,
+#          ppd/Canon-LBP2900-captdriver.ppd  PPD compiled from build/captdriver/src/canon-lbp.drv with ppdc,
 #                                          cupsFilter pointed at the absolute install path
 # Needs Xcode Command Line Tools (cc, cups-config, ppdc all ship with macOS). No autotools.
 #
@@ -45,9 +45,14 @@ cc -std=c99 -O2 -I"$BUILD/captdriver/src" -o "$BUILD/tools/captdefilter" \
 cc -std=c99 -O2 -I"$BUILD/captdriver/src" -o "$BUILD/tools/test-hiscoa" \
    "$BUILD/captdriver/tests/test-hiscoa.c" "$BUILD/captdriver/src/hiscoa-compress.c" \
    "$BUILD/captdriver/tests/hiscoa-decompress.c" 2>&1 | grep -v 'set but not used' || true
+# Hi-SCoA sizing tools (tools/*.c): how much data a page becomes, and which dither matrix compresses best
+cc -std=c99 -O2 -I"$BUILD/captdriver/src" -o "$BUILD/tools/hiscoa-size" "$DIR/tools/hiscoa-size.c" \
+   "$BUILD/captdriver/src/hiscoa-compress.c" "$BUILD/captdriver/src/hiscoa-common.c"
+cc -std=c99 -O2 -I"$BUILD/captdriver/src" -o "$BUILD/tools/halftone-size" "$DIR/tools/halftone-size.c" \
+   "$BUILD/captdriver/src/hiscoa-compress.c" "$BUILD/captdriver/src/hiscoa-common.c"
 
 echo "==> 4/4  Compile PPD from canon-lbp.drv"
-ppdc -d "$BUILD/ppd" "$SRC/src/canon-lbp.drv" >/dev/null
+ppdc -d "$BUILD/ppd" "$BUILD/captdriver/src/canon-lbp.drv" >/dev/null
 sed -e "s#^\*cupsFilter: \"application/vnd.cups-raster 1 rastertocapt\"#*cupsFilter: \"application/vnd.cups-raster 1 $FILTER_INSTALL_PATH\"#" \
     -e 's#^\*NickName: .*#*NickName: "Canon LBP2900 (captdriver 0.1.4, macOS)"#' \
     -e 's#^\*ShortNickName: .*#*ShortNickName: "Canon LBP2900 captdriver"#' \

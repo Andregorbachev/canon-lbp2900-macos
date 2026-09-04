@@ -141,3 +141,23 @@ limits; they are marked below as unverified.
   `87`/`88`/`90` codes, the `90` window after a drop, the hang on data in an error state,
   NOPAPER cleared by UPLOAD_2, a silent drop, a printer that never releases the job, and
   a button that is only visible while the LED blinks. `./test.sh` runs six scenarios.
+
+## Photos: Hi-SCoA versus Apple's halftone (2026-09-04)
+
+- A screenshot printed from an Intel Mac (macOS 12.6) came out as a collage of strips;
+  the job ended with every command rejected (`88`) and the printer hung. The raster
+  header on that Mac is identical to Sonoma's (4722 x 6780, 1 bpp, 591 B/line), and the
+  x86_64 slice produces a byte-identical CAPT stream under Rosetta, so neither the
+  architecture nor the rasteriser geometry is the cause.
+- The LBP2900 has 2 MB of memory (vendor specifications), not expandable. A synthetic
+  photo page halftoned by `cgpdftoraster` (error diffusion, visibly random) is 3.7 MB of
+  Hi-SCoA data; 45 of 97 bands are larger than raw. The same image with ordered dithers
+  (`build/tools/halftone-size`): smooth photo 0.26–0.75 MB depending on the matrix,
+  worst-case noise 1.5–2.2 MB; Floyd–Steinberg 4.6 MB. Block averaging before dithering
+  brings the noisy page to 1.4 MB (2x2), 0.95 MB (4x4), 0.7 MB (8x8).
+- Hence 0.2.3: `canon-lbp.drv` asks for 8-bit grey (`Resolution k 8 …`), `rastertocapt`
+  dithers with an 8x8 Bayer matrix, re-dithers from 2x2/4x4/8x8 averages when the page
+  exceeds 1.25 MB and refuses pages above 1.5 MB. The exact safe limit of the printer is
+  not known; 1.5 MB leaves a quarter of its memory for the firmware.
+- Sources: Canon LBP2900 specifications ([BlueArm](https://bluearm.ph/products/canon-lbp-2900-laser-printer),
+  [VillMan](https://villman.com/Product-Detail/LBP2900)).

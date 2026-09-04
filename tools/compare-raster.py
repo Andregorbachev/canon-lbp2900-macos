@@ -14,16 +14,39 @@ def raster_pages(path):
     while off + 1796 <= len(f):
         hdr = f[off:off + 1796]
         page_w = struct.unpack_from('<I', hdr, 256 + 20 + 8 + 16 + 12 + 8 + 32)[0]
-        cups_w, cups_h, _mt, _bpc, _bpp, bpl = struct.unpack_from('<6I', hdr, 256 + 20 + 8 + 16 + 12 + 8 + 32 + 8 + 12)
+        cups_w, cups_h, _mt, _bpc, bpp, bpl = struct.unpack_from('<6I', hdr, 256 + 20 + 8 + 16 + 12 + 8 + 32 + 8 + 12)
         off += 1796
-        yield page_w, cups_w, cups_h, bpl, f[off:off + bpl * cups_h]
+        data = f[off:off + bpl * cups_h]
         off += bpl * cups_h
+        if bpp == 8:
+            # rastertocapt halftones 8-bit grey itself (8x8 Bayer); reproduce that with the same C code
+            import os, subprocess, tempfile
+            tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'build', 'tools', 'halftone-size')
+            with tempfile.TemporaryDirectory() as td:
+                pgm = os.path.join(td, 'page.pgm'); out = os.path.join(td, 'page.pbm')
+                # CUPS_CSPACE_K: 255 = black; halftone-size expects PGM 0 = black
+                inv = bytes(255 - b for b in range(256))
+                open(pgm, 'wb').write(b'P5\n%d %d\n255\n' % (cups_w, cups_h) + data.translate(inv))
+                subprocess.run([tool, pgm, 'bayer8', out], check=True, stdout=subprocess.DEVNULL)
+                pw, ph, data = read_pbm(out)
+            bpl = (cups_w + 7) // 8
+        yield page_w, cups_w, cups_h, bpl, data
 
 def read_pbm(path):
+    """P4 header: magic, optional comment lines, width height, one whitespace, then bits."""
     data = open(path, 'rb').read()
-    parts = data.split(b'\n', 3)
-    w, h = map(int, parts[2].split())
-    return w, h, parts[3]
+    pos = 2; tokens = []
+    while len(tokens) < 2:
+        while data[pos:pos + 1].isspace():
+            pos += 1
+        if data[pos:pos + 1] == b'#':
+            pos = data.index(b'\n', pos) + 1
+            continue
+        end = pos
+        while not data[end:end + 1].isspace():
+            end += 1
+        tokens.append(int(data[pos:end])); pos = end
+    return tokens[0], tokens[1], data[pos + 1:]
 
 ras, pbm = sys.argv[1], sys.argv[2]
 pw, ph, pixels = read_pbm(pbm)
