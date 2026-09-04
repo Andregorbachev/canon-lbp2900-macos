@@ -123,9 +123,22 @@ class UsbTransport:
         self.ep_out = self.util.find_descriptor(intf, custom_match=lambda e: d(e.bEndpointAddress) == self.util.ENDPOINT_OUT).bEndpointAddress
         self.ep_in = self.util.find_descriptor(intf, custom_match=lambda e: d(e.bEndpointAddress) == self.util.ENDPOINT_IN).bEndpointAddress
         self.log(f'usb: claimed interface {self.intf}, out {self.ep_out:#04x} in {self.ep_in:#04x}')
+        self.clear_halt()
+
+    def clear_halt(self):
+        for ep in (self.ep_out, self.ep_in):
+            try:
+                self.dev.clear_halt(ep)
+            except Exception as e:
+                self.log(f'usb: clear_halt {ep:#04x}: {e}')
 
     def write(self, data, timeout_ms=10000):
-        return self.dev.write(self.ep_out, data, timeout=timeout_ms)
+        try:
+            return self.dev.write(self.ep_out, data, timeout=timeout_ms)
+        except self.usb.core.USBTimeoutError:
+            self.log('usb: bulk write timed out; clearing endpoint halts and retrying once')
+            self.clear_halt()
+            return self.dev.write(self.ep_out, data, timeout=timeout_ms)
 
     def read(self, n=512, timeout_ms=5000):
         return bytes(self.dev.read(self.ep_in, n, timeout=timeout_ms))
