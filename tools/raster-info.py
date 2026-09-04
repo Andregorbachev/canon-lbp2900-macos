@@ -32,7 +32,7 @@ def main():
         o = 256 + 20 + 8 + 16 + 12 + 8 + 32 + 8
         g = lambda k: struct.unpack_from(end + 'I', hdr, o + k)[0]
         res = struct.unpack_from(end + 'II', hdr, 256 + 20)
-        size = struct.unpack_from(end + 'II', hdr, o - 12)
+        size = struct.unpack_from(end + 'II', hdr, o - 8)
         page += 1
         w, h, bpc, bpp, bpl, cs = g(12), g(16), g(24), g(28), g(32), g(40)
         print(f'page {page}: {w} x {h} px, {res[0]}x{res[1]} dpi, PageSize {size[0]}x{size[1]} pt, '
