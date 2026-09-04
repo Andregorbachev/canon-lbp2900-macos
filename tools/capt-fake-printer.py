@@ -86,6 +86,8 @@ class Printer:
         self.paper_out_silent = False   # drop the page without NOPAPER flags (seen on the real unit, run 3)
         self.release_after_polls = 3    # the printer releases the unit this many polls after dropping a page (-1 = never)
         self.drop_polls = -1            # polls since the page was dropped (-1 = no drop pending)
+        self.error_polls = 6            # after releasing, ReserveUnit answers 0x90 for this many more polls
+        self.marked_90 = False
 
     def mark(self, m):
         self.milestones.append(m)
@@ -194,6 +196,14 @@ class Printer:
                 # the byte-0 = 0x02 variant of the Canon Windows driver is refused by this firmware
                 self.mark('JOB_BEGIN byte0=0x02 -> 0x90')
                 return struct.pack('<HHI', 0x90, 0, 0)
+            if self.drop_polls >= 0:
+                self.drop_polls += 1      # the real printer's paper check is on a timer; count attempts too
+            if self.drop_polls >= 0 and self.drop_polls < self.release_after_polls + self.error_polls:
+                # real LBP2900 (job 78): for ~10 s after the drop the printer runs its own paper check and
+                # answers 0x90 to ReserveUnit
+                self.mark('JOB_BEGIN during the printer\'s own paper check -> 0x90') if not self.marked_90 else None
+                self.marked_90 = True
+                return struct.pack('<HHI', 0x90, 0, 0)
             if self.reserved:
                 # real LBP2900 (job 73): ReserveUnit while the unit is still held -> 0x87, and the
                 # printer then drops the old job (bit 0 set); everything else answers 0x88 until re-reserved
@@ -202,6 +212,7 @@ class Printer:
                 return struct.pack('<HHI', 0x87, 0, 0)
             self.reserved = True
             self.drop_polls = -1
+            self.marked_90 = False
             self.job += 1
             self.mark(f'JOB_BEGIN byte0=0x{payload[0]:02X} job=0x{self.job:04X}' if payload else 'JOB_BEGIN')
             return struct.pack('<HHI', 0, self.job, 0)     # job number at bytes 2-3
@@ -235,10 +246,11 @@ class Printer:
             # the NOPAPER flags are latched and only re-sampled from the tray here
             self.page_decoding = self.page_printing = self.page_out = self.page_completed = self.page_received = 0
             was = self.no_paper
-            self.no_paper = self.tray_empty
+            self.no_paper = False        # real unit (job 78): the NOPAPER flags clear after the reset even with an
+            self.marked_90 = False       # empty tray; the next FIRE finds out again
             if was:
-                self.mark('UPLOAD_2: printer re-initialised, counters reset, ' +
-                          ('tray still empty' if self.no_paper else 'paper present'))
+                self.mark('UPLOAD_2: printer re-initialised, counters reset, NOPAPER cleared' +
+                          (' (tray still empty)' if self.tray_empty else ''))
             else:
                 self.mark('UPLOAD_2 (printer initialised)')
             self.busy_polls = 2
