@@ -83,6 +83,9 @@ class Printer:
         self.rejecting = False      # kept for --fake-reject in capt-probe: answer 0x88 to everything
         self.hung = False           # stopped answering (page data pushed into an error state)
         self.dropped_unrecovered = False
+        self.buffer_bytes = 0           # page data held in the printer; drains as it prints/decodes
+        self.buffer_capacity = 1 << 20  # STATUS0 bit 2 (BUFFERFULL) above this; data beyond it is lost
+        self.overflowed = False
         self.paper_out_silent = False   # drop the page without NOPAPER flags (seen on the real unit, run 3)
         self.release_after_polls = 3    # the printer releases the unit this many polls after dropping a page (-1 = never)
         self.drop_polls = -1            # polls since the page was dropped (-1 = no drop pending)
@@ -108,6 +111,10 @@ class Printer:
             if self.release_after_polls >= 0 and self.drop_polls > self.release_after_polls and self.reserved:
                 self.reserved = False
                 self.mark('printer released the unit on its own after the dropped page')
+        # the engine consumes ~64 KB of band data per poll
+        self.buffer_bytes = max(0, self.buffer_bytes - 65536)
+        if self.buffer_bytes > self.buffer_capacity // 2:
+            v |= 1 << 2          # BUFFERFULL: do not send data
         if not self.reserved:
             v |= 1 << 0          # STATUS0 bit 0: no job holds the unit
         if self.no_paper:
@@ -178,6 +185,12 @@ class Printer:
                 self.errors.append('PRINT_DATA before SET_PARMS')
                 return None
             self.pages[-1]['bands'].append(payload)
+            self.buffer_bytes += len(payload)
+            if self.buffer_bytes > self.buffer_capacity and not self.overflowed:
+                self.overflowed = True
+                self.errors.append(f'printer buffer overflow: {self.buffer_bytes} bytes held, capacity {self.buffer_capacity} '
+                                   '(the filter ignored BUFFERFULL; a real LBP2900 garbles the page)')
+                self.mark('BUFFER OVERFLOW')
             n = len(self.pages[-1]['bands'])
             if n == 1 or n % 25 == 0:
                 self.log(f'  {name}: chunk {n}, {len(payload)} bytes')

@@ -40,7 +40,7 @@ stream decoded back to the original page byte for byte.
 | `package.sh` | Builds `dist/canon-lbp2900-macos-<version>-universal.tar.gz` for installing on another Mac without Xcode. |
 | `ppd/Canon-LBP2900-captdriver.ppd` | Generated PPD. Recreated by `build.sh`. |
 | `tools/capt-fake-printer.py` | Printer emulator: stands in for the three CUPS backend channels (stdout, fd 3, fd 4) and answers CAPT commands per `SPECS` and `prn_lbp2900.c`, including the out-of-paper behaviour observed on the real unit. |
-| `tools/compare-raster.py`, `tools/pbm-to-png.py` | Compare the decoded page with the source raster; render a PNG. |
+| `tools/compare-raster.py`, `tools/pbm-to-png.py`, `tools/make-photo-page.py` | Compare the decoded page with the source raster; render a PNG; generate the photo-like test page. |
 | `tools/capt-probe.py` | Direct USB probe over libusb/pyusb (`.venv`, `brew install libusb`, run with `sudo`): printer status, USB resets, and a step-by-step out-of-paper experiment that logs every printer reply. Needed because through CUPS each attempt costs a printer power cycle. |
 | `docs/research-notes.md` | What was checked and found: Canon's driver line-up, captdriver ports, the CAPT status record, the out-of-paper state machine. |
 | `build/` | Everything generated. Deleted and recreated by `build.sh`. |
@@ -87,7 +87,8 @@ Requires the Xcode Command Line Tools (`xcode-select --install`). No autotools.
 (IDENT → JOB_BEGIN → START/UPLOAD → SET_PARMS → PRINT_DATA → FIRE → JOB_END), plus
 five out-of-paper scenarios (tray runs empty on page 2 of 3; the printer drops the page
 silently; the printer never releases the job; both; the tray stays empty through the
-automatic retry so the button path is exercised); decodes the captured stream and
+automatic retry so the button path is exercised) and a ~4 MB photo page against an
+emulated 1 MB printer buffer; decodes the captured stream and
 compares it with the raster byte for byte; renders `build/test/test-page-decoded.png`.
 
 Install, with the printer switched on and connected over USB:
@@ -167,6 +168,13 @@ arm64 build byte for byte, only the timestamps in the JOB_SETUP commands differ.
   job without releasing the old one / with byte `02`: `87`/`90`. The emulator reproduces
   every variant; `./test.sh` runs six scenarios. Confirmed through CUPS on the real
   printer on 2026-09-04.
+- Photos and other dense pages (fixed in 0.2.2, awaiting confirmation on a real printer).
+  A halftoned photo does not compress: a page is several MB of Hi-SCoA data instead of
+  ~25 KB for text. Upstream captdriver streams the whole page without looking at the
+  printer's BUFFERFULL flag (STATUS0 bit 2, "do not send data"); the LBP2900's buffer
+  overflows and the page prints as a collage of misplaced strips, then gets dropped.
+  The second patch now checks the flag every 32 KB of page data and waits while it is
+  set. `./test.sh` runs a ~4 MB synthetic photo page against an emulated 1 MB buffer.
 - The paper-size code in the printer command is always A4: upstream takes the size name
   from the raster's `MediaType` field instead of `cupsPageSizeName`. The image size is
   right, so for A4 it makes no difference; Letter may show artefacts.

@@ -79,6 +79,14 @@ grep -q 'user pressed the blinking button' "$OUT/fake-printer-paper-out-button.l
 drops=$(grep milestones "$OUT/fake-printer-paper-out-button.log" | grep -o 'page dropped' | wc -l | tr -d ' ')
 [ "$drops" -eq 2 ] || { echo "!! expected exactly 2 drops (one automatic retry), got $drops"; exit 1; }
 
+echo "==> 2e   Photo page (~4 MB of CAPT data): the filter must pace by BUFFERFULL, the emulated buffer is 1 MB"
+python3 "$DIR/tools/make-photo-page.py" "$OUT/photo.png" > /dev/null
+cupsfilter -p "$PPD" -m application/vnd.cups-raster "$OUT/photo.png" > "$OUT/photo.ras" 2> "$OUT/cupsfilter-photo.log"
+python3 "$DIR/tools/capt-fake-printer.py" --filter "$FILTER" --raster "$OUT/photo.ras" \
+    --log "$OUT/rastertocapt-photo.log" --timeout 240 > "$OUT/fake-printer-photo.log"
+grep -E 'RESULT|ERROR' "$OUT/fake-printer-photo.log"
+grep -q 'RESULT: PASS' "$OUT/fake-printer-photo.log"
+
 echo "==> 3/4  Decode the CAPT stream and compare with the input raster"
 "$DIR/build/tools/captdefilter" "$OUT/test-page.capt" > "$OUT/test-page-decoded.pbm" 2> "$OUT/captdefilter.log"
 python3 "$DIR/tools/compare-raster.py" "$OUT/test-page.ras" "$OUT/test-page-decoded.pbm"
