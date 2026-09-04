@@ -45,6 +45,17 @@ python3 "$DIR/tools/capt-fake-printer.py" --filter "$FILTER" --raster "$OUT/test
 grep -E 'RESULT|milestones|^.{11}page ' "$OUT/fake-printer.log"
 grep -q 'RESULT: PASS' "$OUT/fake-printer.log"
 
+echo "==> 2b   Paper-out on page 2 of 3: the emulated tray runs empty, the user loads paper and presses the button"
+printf 'page one\f\npage two\f\npage three\n' > "$OUT/three-pages.txt"
+cupsfilter -p "$PPD" -m application/vnd.cups-raster "$OUT/three-pages.txt" \
+    > "$OUT/three-pages.ras" 2> "$OUT/cupsfilter-3p.log"
+python3 "$DIR/tools/capt-fake-printer.py" --filter "$FILTER" --raster "$OUT/three-pages.ras" \
+    --paper-out-page 2 --paper-out-polls 8 \
+    --log "$OUT/rastertocapt-paper-out.log" --timeout 240 \
+    > "$OUT/fake-printer-paper-out.log"
+grep -E 'RESULT|milestones' "$OUT/fake-printer-paper-out.log" | cut -c1-600
+grep -q 'RESULT: PASS' "$OUT/fake-printer-paper-out.log"
+
 echo "==> 3/4  Decode the CAPT stream and compare with the input raster"
 "$DIR/build/tools/captdefilter" "$OUT/test-page.capt" > "$OUT/test-page-decoded.pbm" 2> "$OUT/captdefilter.log"
 python3 "$DIR/tools/compare-raster.py" "$OUT/test-page.ras" "$OUT/test-page-decoded.pbm"

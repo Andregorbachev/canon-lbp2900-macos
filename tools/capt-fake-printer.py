@@ -41,7 +41,7 @@ NAMES = {
     0xD0A0: 'SET_PARM_PAGE', 0xD0A1: 'SET_PARM_1', 0xD0A2: 'SET_PARM_2',
     0xD0A4: 'SET_PARM_HISCOA', 0xD0A9: 'SET_PARMS',
     0xE0A0: 'CHKSTATUS', 0xE0A2: 'START_2', 0xE0A3: 'START_1', 0xE0A4: 'START_3',
-    0xE0A5: 'UPLOAD_2', 0xE0A6: 'LBP3000_SETUP_0', 0xE0A7: 'FIRE', 0xE0A9: 'JOB_END',
+    0xE0A5: 'UPLOAD_2', 0xE0A6: 'GO_OFFLINE', 0xE0A7: 'FIRE', 0xE0A9: 'JOB_END',
     0xE0BA: 'LBP6000_SETUP_0', 0xE1A1: 'JOB_SETUP', 0xE1A2: 'GPIO',
 }
 # 0xC0xx and 0xD0xx commands are one-way (SPECS 1.4); everything else gets a reply.
@@ -73,9 +73,15 @@ class Printer:
         self.errors = []
         self.paper_out_page = 0     # emulate an empty tray when this page is fired (0 = never)
         self.paper_out_polls = 0    # ...for this many status polls, then "paper loaded"
-        self.no_paper = False
-        self.no_paper_polls = 0
+        self.tray_empty = False     # physical tray state
+        self.no_paper = False       # latched NOPAPER flags: re-sampled from tray_empty only by UPLOAD_2
+        self.no_paper_polls = 0     # status polls since the tray ran empty
         self.no_paper_pending_page = 0
+        self.button_pressed = False # sticky until the driver sends GPIO init (LED off)
+        self.reserved = False       # unit reserved by JOB_BEGIN, released by JOB_END
+        self.rejecting = False      # answering 0x88 to everything (after JOB_BEGIN on a reserved unit)
+        self.hung = False           # stopped answering (page data pushed into an error state)
+        self.dropped_unrecovered = False
 
     def mark(self, m):
         self.milestones.append(m)
@@ -94,8 +100,7 @@ class Printer:
         if self.page_decoding and self.page_out < self.page_decoding:
             v |= 1 << 0          # processing job
         if self.no_paper:
-            v |= 1 << 1                # NOPAPER1
-            self.uninit = True         # UNINIT2 is set while out of paper and stays until UPLOAD_2
+            v |= 1 << 1                # NOPAPER1 (latched, see UPLOAD_2)
         return v
 
     def status_record(self):
@@ -104,15 +109,18 @@ class Printer:
         b[2:8] = bytes([0x00, 0x00, 0x0F, 0x00, 0x00, 0x00])
         status1 = (1 << 2) if self.page_printing > self.page_out else 0
         status2 = 0
-        if self.no_paper:
+        if self.tray_empty or self.no_paper or self.button_pressed:
             self.no_paper_polls += 1
+        if self.no_paper:
             status1 = (1 << 14) | ((1 << 2) if self.no_paper_polls <= 2 else 0)
-            # a real LBP2900 does not resume by itself; after K polls the user presses the button
-            if self.paper_out_polls < self.no_paper_polls <= self.paper_out_polls + 2:
-                status1 |= 1 << 5            # STATUS1 bit 5: button pressed
-                status2 = 1 << 7             # STATUS2 bit 7: "problem" bit, seen together with it
-                if self.no_paper_polls == self.paper_out_polls + 1:
-                    self.mark('user loaded paper and pressed the button')
+        if self.tray_empty and self.no_paper_polls > self.paper_out_polls:
+            # a real LBP2900 does not resume by itself: after K polls the user loads paper and presses the button
+            self.tray_empty = False
+            self.button_pressed = True
+            self.mark('user loaded paper and pressed the button')
+        if self.button_pressed:
+            status1 |= 1 << 5            # STATUS1 bit 5: button pressed
+            status2 = 1 << 7             # STATUS2 bit 7: seen together with it on a real unit
         struct.pack_into('<H', b, 8, status1)
         struct.pack_into('<H', b, 10, status2)
         struct.pack_into('<H', b, 12, 0)             # STATUS3
@@ -134,6 +142,17 @@ class Printer:
     def handle(self, cmd, payload):
         """Return the reply payload (bytes) or None for one-way commands."""
         name = NAMES.get(cmd, f'0x{cmd:04X}')
+        if self.hung:
+            return None
+        if cmd == 0xC0A0 and (self.rejecting or self.uninit):
+            # Galakhov: page data sent to a printer that is not ready hangs its CPU (USB timeouts until power cycle)
+            self.hung = True
+            self.errors.append('page data pushed into an error state: printer hung')
+            self.mark('PRINTER HUNG')
+            return None
+        if self.rejecting and cmd not in (0xE0A0, 0xA0A8, 0xA0A1, 0xA1A0, 0xA1A1, 0xC0A0, 0xC0A4, 0xD0A9):
+            self.log(f'  {name}: rejected with 0x88')
+            return b'\x88\x00'
         if cmd == 0xC0A0:
             if not self.pages:
                 self.errors.append('PRINT_DATA before SET_PARMS')
@@ -153,9 +172,23 @@ class Printer:
         if cmd == 0xA3A2:
             return b'\x00\x00'
         if cmd == 0xA2A0:
-            self.mark('JOB_BEGIN')
+            if self.reserved:
+                # observed on a real LBP2900 (job 73): ReserveUnit while the unit is still held -> 0x87,
+                # every following command -> 0x88, page data -> no reply at all
+                self.rejecting = True
+                self.mark('JOB_BEGIN on a reserved unit -> 0x87')
+                return struct.pack('<HHI', 0x87, 0, 0)
+            self.reserved = True
+            self.job += 1
+            self.mark(f'JOB_BEGIN byte0=0x{payload[0]:02X} job=0x{self.job:04X}' if payload else 'JOB_BEGIN')
             return struct.pack('<HHI', 0, self.job, 0)     # job number at bytes 2-3
         if cmd == 0xE1A2:
+            if payload and not any(payload):
+                if self.button_pressed:
+                    self.mark('GPIO init: LED off, button acknowledged')
+                self.button_pressed = False
+            elif self.tray_empty or self.no_paper:
+                self.mark('GPIO blink: LED blinking')
             return b'\x00\x00'
         if cmd == 0xE1A1:
             fg = payload[16] if len(payload) > 16 else -1
@@ -173,11 +206,14 @@ class Printer:
         if cmd == 0xE0A5:
             self.uninit = False
             self.upload_count += 1
-            # observed on a real LBP2900: START/UPLOAD resets the page counters and drops a held page
+            # observed on a real LBP2900: START/UPLOAD resets the page counters and drops a held page;
+            # the NOPAPER flags are latched and only re-sampled from the tray here
             self.page_decoding = self.page_printing = self.page_out = self.page_completed = self.page_received = 0
-            if self.no_paper:
-                self.no_paper = False
-                self.mark('UPLOAD_2: printer re-initialised, held page dropped, counters reset')
+            was = self.no_paper
+            self.no_paper = self.tray_empty
+            if was:
+                self.mark('UPLOAD_2: printer re-initialised, counters reset, ' +
+                          ('tray still empty' if self.no_paper else 'paper present'))
             else:
                 self.mark('UPLOAD_2 (printer initialised)')
             self.busy_polls = 2
@@ -213,22 +249,38 @@ class Printer:
             return None
         if cmd == 0xE0A7:
             page = struct.unpack_from('<H', payload, 0)[0] if len(payload) >= 2 else -1
-            if self.paper_out_page and self.pages and self.pages[-1]['n'] == self.paper_out_page and not self.no_paper and self.page_out < page:
-                self.no_paper = True
+            if self.no_paper or self.uninit:
+                self.errors.append(f'FIRE page {page} while the printer is not ready')
+                self.mark(f'FIRE page {page} ignored (not ready)')
+            elif self.paper_out_page and self.pages and len(self.pages) == self.paper_out_page and self.page_out < page:
+                self.tray_empty = True
+                self.no_paper = True          # latched until UPLOAD_2
+                self.uninit = True            # UNINIT2 is set while out of paper and stays until UPLOAD_2
                 self.no_paper_polls = 0
                 self.no_paper_pending_page = page
-                self.mark(f'FIRE page {page} -> tray empty, page held in printer buffer')
+                self.dropped_unrecovered = True
+                self.mark(f'FIRE page {page} -> tray empty, page dropped')
             else:
                 self.page_out = self.page_decoding
                 self.page_completed = self.page_decoding
-                self.mark(f'FIRE page {page}')
+                if self.dropped_unrecovered:
+                    self.dropped_unrecovered = False
+                    self.mark(f'FIRE page {page} (re-sent after paper-out) OK')
+                else:
+                    self.mark(f'FIRE page {page}')
             self.busy_polls = 1
             return b'\x00\x00'
         if cmd == 0xE0A9:
             job = struct.unpack_from('<H', payload, 0)[0] if len(payload) >= 2 else -1
+            if job != self.job:
+                self.errors.append(f'JOB_END for job 0x{job:04X}, current is 0x{self.job:04X}')
+            self.reserved = False
             self.mark(f'JOB_END job=0x{job:04X}')
             return b'\x00\x00'
-        if cmd in (0xE0A6, 0xE0BA, 0xA0A0):
+        if cmd == 0xE0A6:
+            self.mark('GoOffline')
+            return b'\x00\x00'
+        if cmd in (0xE0BA, 0xA0A0):
             return b'\x00\x00'
         self.errors.append(f'unexpected command 0x{cmd:04X}')
         return b'\x00\x00'
@@ -394,7 +446,11 @@ def main():
         log(f'page {p["n"]}: {len(p["bands"])} data chunks, {nbytes} compressed bytes, '
             f'line_size={p.get("line_size")} num_lines={p.get("num_lines")}')
 
-    ok = rc == 0 and not printer.errors and printer.pages and \
+    if printer.dropped_unrecovered:
+        printer.errors.append('page dropped at paper-out was never re-printed')
+    if printer.reserved:
+        printer.errors.append('unit still reserved at exit (no final JOB_END)')
+    ok = rc == 0 and not printer.errors and printer.pages and not printer.hung and \
         any(m.startswith('JOB_END') for m in printer.milestones) and \
         all(any(m == f'PRINT_DATA_END page {p["n"]}' or m.startswith(f'PRINT_DATA_END page {p["n"]} ') for m in printer.milestones) for p in printer.pages)
     if printer.errors:
