@@ -76,7 +76,7 @@ python3 "$DIR/tools/capt-fake-printer.py" --filter "$FILTER" --raster "$OUT/thre
 grep -E 'RESULT' "$OUT/fake-printer-paper-out-button.log"
 grep -q 'RESULT: PASS' "$OUT/fake-printer-paper-out-button.log"
 grep -q 'user pressed the blinking button' "$OUT/fake-printer-paper-out-button.log" || { echo "!! the button path was not exercised"; exit 1; }
-drops=$(grep -o 'page dropped' "$OUT/fake-printer-paper-out-button.log" | wc -l | tr -d ' ')
+drops=$(grep milestones "$OUT/fake-printer-paper-out-button.log" | grep -o 'page dropped' | wc -l | tr -d ' ')
 [ "$drops" -eq 2 ] || { echo "!! expected exactly 2 drops (one automatic retry), got $drops"; exit 1; }
 
 echo "==> 3/4  Decode the CAPT stream and compare with the input raster"
