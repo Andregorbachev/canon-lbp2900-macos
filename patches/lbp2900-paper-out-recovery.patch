@@ -1,0 +1,84 @@
+diff -ru a/src/prn_lbp2900.c b/src/prn_lbp2900.c
+--- captdriver/src/prn_lbp2900.c	2026-09-04 08:21:37
++++ captdriver/src/prn_lbp2900.c	2026-09-04 08:21:38
+@@ -313,6 +313,7 @@
+ 
+ 	status = lbp2900_get_status(state->ops);
+ 	if (FLAG(status, CAPT_FL_UNINIT1) || FLAG(status, CAPT_FL_UNINIT2)) {
++		fprintf(stderr, "DEBUG: CAPT: printer not initialised (UNINIT), sending START/UPLOAD sequence\n");
+ 		capt_sendrecv(CAPT_START_1, NULL, 0, NULL, 0);
+ 		capt_sendrecv(CAPT_START_2, NULL, 0, NULL, 0);
+ 		capt_sendrecv(CAPT_START_3, NULL, 0, NULL, 0);
+@@ -374,30 +375,35 @@
+ 
+ 	send_job_start(6, status->page_decoding);
+ 
+-	bool blinking = false;
+-	for (unsigned polls = 0; ; ++polls) {
++	/* Out of paper on a real LBP2900 (macOS, 2026-09-04): the printer drops the
++	 * fired page, sets UNINIT2 and does NOT resume by itself when paper is
++	 * loaded; NOPAPER1/2 stay set. Report it once, poll once a second while the
++	 * engine is still moving, then return false: rastertocapt waits for the
++	 * button and restarts the job, which re-initialises the printer
++	 * (START/UPLOAD) and re-sends the page. Re-sending inside the old job,
++	 * as upstream did, left the printer silent on USB until power-cycled. */
++	bool no_paper = false;
++	unsigned polls = 0;
++	while (1) {
+ 		const struct capt_status_s *status = lbp2900_get_status(state->ops);
+ 		/* Interesting. Using page_printing here results in shifted print */
+ 		if (status->page_out == status->page_decoding) {
+-			/* Page ejected OK -> clear the out-of-paper reason. */
+ 			fprintf(stderr, "STATE: -media-empty\n");
+ 			return true;
+ 		}
+ 		if (FLAG(status, CAPT_FL_NOPAPER2) || FLAG(status, CAPT_FL_NOPAPER1)) {
+-			fprintf(stderr, "DEBUG: CAPT: no paper\n");
+-			/* Surface "Out of paper" in the macOS print queue window. */
+-			fprintf(stderr, "STATE: +media-empty\n");
+-			/* Blink the printer's LED so it's obvious at the machine. */
+-			if (! blinking) {
+-				capt_sendrecv(CAPT_GPIO, lbp2900_gpio_blink,
+-						ARRAY_SIZE(lbp2900_gpio_blink), NULL, 0);
+-				blinking = true;
++			if (! no_paper) {
++				no_paper = true;
++				fprintf(stderr, "DEBUG: CAPT: no paper\n");
++				fprintf(stderr, "STATE: +media-empty\n");
+ 			}
+-			if (FLAG(status, CAPT_FL_PRINTING) || FLAG(status, CAPT_FL_PROCESSING1))
++			if (FLAG(status, CAPT_FL_PRINTING) || FLAG(status, CAPT_FL_PROCESSING1)) {
++				sleep(1);
+ 				continue;
++			}
+ 			return false;
+ 		}
+-		if (polls >= CAPT_WAIT_POLLS_PAGE) {
++		if (++polls >= CAPT_WAIT_POLLS_PAGE) {
+ 			fprintf(stderr, "WARNING: CAPT: page-out didn't settle ~%us; continuing\n",
+ 					CAPT_WAIT_POLLS_PAGE / 10);
+ 			return true;
+@@ -470,6 +476,7 @@
+ {
+ 	(void) state;
+ 
++	fprintf(stderr, "INFO: CAPT: load paper and press the printer button\n");
+ 	capt_sendrecv(CAPT_GPIO, lbp2900_gpio_blink, ARRAY_SIZE(lbp2900_gpio_blink), NULL, 0);
+ 	lbp2900_wait_ready(state->ops);
+ 
+diff -ru a/src/rastertocapt.c b/src/rastertocapt.c
+--- captdriver/src/rastertocapt.c	2026-09-04 08:21:37
++++ captdriver/src/rastertocapt.c	2026-09-04 08:21:38
+@@ -312,6 +312,12 @@
+ 			if (! ok) {
+ 				fprintf(stderr, "DEBUG: CAPT: rastertocapt: page not printed\n");
+ 				ops->wait_user(state);
++				/* The printer dropped the page. Start a fresh job before re-sending
++				 * it, the same way a restarted filter does: on a real LBP2900 a
++				 * re-send inside the old job stalled the USB link, while a new job
++				 * prologue plus the START/UPLOAD re-initialisation printed fine. */
++				fprintf(stderr, "DEBUG: CAPT: rastertocapt: restarting job to re-send page %u\n", state->ipage);
++				in_job = false;
+ 				continue;
+ 			}
+ 		}

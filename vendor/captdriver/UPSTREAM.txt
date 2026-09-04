@@ -1,0 +1,5 @@
+Upstream: https://github.com/mounaiban/captdriver
+Commit: 62719249ac34633338be54bc74beddd0e7003d38
+Date: 2022-10-14 00:10:28 +1100
+License: GPL-3.0 (see COPYING)
+Copied verbatim, .git removed. Do not edit here; changes go to ../../patches.
